@@ -22,6 +22,7 @@ internal/
   storage/     — sqlite.go (schema generated from hk + migrations), queries.go (CLI totals,
                  sleep sessions), series.go (bucketed aggregation), summary.go (KPI tiles),
                  insights.go (highlights), sleepnights.go, rings.go, workouts*.go, tables.go
+  insights/    — deterministic observation engine (baselines, load, sleep, habits, red flags)
   people/      — people.db registry + per-person *storage.DB cache
   server/      — chi router: /api/... JSON + SPA fallback; per-person async import jobs
   web/         — //go:embed all:dist (Vite build output; placeholder page if not built)
@@ -124,6 +125,21 @@ never need Node.
   and HRV, first→last changes, sleep average with denominator, longest/most frequent workout,
   per-type records vs all history, cardio event counts.
 
+### Observations (`internal/insights`)
+- `insights.Compute(db, asOf)` runs ~16 detectors and returns a `Report` with observations sorted
+  alert > warning > notice > info, plus `Checked` and `Skipped` (with reasons) so absence is meaningful.
+- Everything compares the person with **their own** history: 28-day median + MAD baseline for
+  resting HR / HRV / wrist temp / respiratory rate / SpO2 (recent = last 3 days; fires only beyond
+  both an absolute threshold and 2×spread), a strain composite when ≥2 markers move together,
+  7d:28d acute:chronic exercise ratio, last-7-nights sleep debt/short nights/drop plus 4-week
+  bedtime spread and weekend shift, steps and ring-closure trends, 90-day VO2max and resting-HR
+  trends, weight change, headphone dB energy-average vs WHO 80 dB, and red flags (rhythm
+  notifications, non-sinus ECG, SpO2 < 90 % nights).
+- Minimum-data rules are explicit per detector; missing days are unknown, never zero. Red flags say
+  "discuss with a doctor", never diagnose. Adding a detector = one function appended to `steps`.
+- API: `GET /api/people/{id}/observations?as_of=YYYY-MM-DD` (default: last day with data). UI:
+  Observations page + top-4 panel on Overview.
+
 ### Server / API
 - `/api` is mounted first; unknown `/api/*` → JSON 404; everything else → embedded SPA
   (`index.html` fallback, immutable cache on `/assets/*`).
@@ -161,6 +177,8 @@ never need Node.
 - `internal/storage` — ~70 tests: generated DDL for every table, v1→v2 column upgrade, series per
   Agg × bucket, summary deltas, ring streaks, table rows/CSV/availability, imports, ECG, highlights,
   plus the original dedup/sleep-session suites
+- `internal/insights` — each detector on synthetic data (elevated RHR, noisy baseline must not fire,
+  strain composite, load spike, short/irregular sleep, red flags, rings, stale/unworn), empty DB
 - `internal/people` — CRUD, name lookup, file removal, DB cache, profile fill
 - `internal/server` — people CRUD, upload → poll → every dashboard endpoint, per-person 409,
   validation, SPA fallback vs JSON 404

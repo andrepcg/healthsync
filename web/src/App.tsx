@@ -16,6 +16,7 @@ import { MindfulnessPage } from './pages/Mindfulness'
 import { ExplorePage } from './pages/Explore'
 import { PeoplePage } from './pages/People'
 import { ComparePage } from './pages/Compare'
+import { ObservationsPage } from './pages/Observations'
 
 const WorkoutDetailPage = lazy(() => import('./pages/WorkoutDetail'))
 
@@ -53,6 +54,7 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="overview" replace /> },
           { path: 'overview', element: <OverviewPage /> },
+          { path: 'observations', element: <ObservationsPage /> },
           { path: 'activity', element: <ActivityPage /> },
           { path: 'heart', element: <HeartPage /> },
           { path: 'sleep', element: <SleepPage /> },

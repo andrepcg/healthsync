@@ -9,6 +9,7 @@ import type {
   Highlight,
   ImportRow,
   Metric,
+  ObservationReport,
   Person,
   Rings,
   RoutePoint,
@@ -68,6 +69,14 @@ export function useHighlights(id: string | undefined, range: Range) {
     queryKey: ['highlights', id, range.from, range.to],
     queryFn: () => fetchJson<Highlight[]>(personPath(id!, '/highlights'), range),
     enabled: !!id && !!range.from && !!range.to,
+  })
+}
+
+export function useObservations(id: string | undefined, asOf?: string) {
+  return useQuery({
+    queryKey: ['observations', id, asOf ?? ''],
+    queryFn: () => fetchJson<ObservationReport>(personPath(id!, '/observations'), { as_of: asOf }),
+    enabled: !!id,
   })
 }
 

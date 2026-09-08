@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/BRO3886/healthsync/internal/hk"
+	"github.com/BRO3886/healthsync/internal/insights"
 	"github.com/BRO3886/healthsync/internal/parser"
 	"github.com/BRO3886/healthsync/internal/storage"
 )
@@ -168,6 +169,24 @@ func (h *handlers) handleHighlights(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, hl)
+}
+
+// handleObservations runs the rule-based insight engine as of a date
+// (default: the person's last day with data).
+func (h *handlers) handleObservations(w http.ResponseWriter, r *http.Request) {
+	asOf := r.URL.Query().Get("as_of")
+	if asOf != "" {
+		if _, err := time.Parse("2006-01-02", asOf); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid as_of %q (want YYYY-MM-DD)", asOf)
+			return
+		}
+	}
+	rep, err := insights.Compute(dbFrom(r), asOf)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (h *handlers) handleRings(w http.ResponseWriter, r *http.Request) {

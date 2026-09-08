@@ -226,6 +226,19 @@ func TestUpload_ImportsAndServesDashboardData(t *testing.T) {
 		t.Errorf("highlights: %d %s", rr.Code, rr.Body.String())
 	}
 
+	rr = do(t, router, "GET", "/api/people/"+id+"/observations", nil, "")
+	var obs struct {
+		AsOf    string `json:"as_of"`
+		Checked []string
+	}
+	decode(t, rr, &obs)
+	if rr.Code != 200 || obs.AsOf != "2024-01-02" || len(obs.Checked) == 0 {
+		t.Errorf("observations: %d %+v", rr.Code, obs)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/observations?as_of=nope", nil, ""); rr.Code != 400 {
+		t.Errorf("bad as_of: %d", rr.Code)
+	}
+
 	rr = do(t, router, "GET", "/api/people/"+id+"/activity/rings?from=2024-01-01&to=2024-01-07", nil, "")
 	var rings struct{ Days []map[string]any }
 	decode(t, rr, &rings)

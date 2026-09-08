@@ -284,3 +284,29 @@ export interface EnvironmentOverview {
   water_temperature?: Series
   events: Record<string, unknown>[]
 }
+
+export interface Evidence {
+  label: string
+  value: string
+}
+
+export interface Observation {
+  id: string
+  category: string
+  severity: 'alert' | 'warning' | 'notice' | 'info'
+  tone: 'good' | 'bad' | 'neutral'
+  title: string
+  detail: string
+  advice?: string
+  window: string
+  evidence: Evidence[]
+  link?: string
+  days: number
+}
+
+export interface ObservationReport {
+  as_of: string
+  observations: Observation[]
+  checked: string[]
+  skipped: { check: string; reason: string }[]
+}

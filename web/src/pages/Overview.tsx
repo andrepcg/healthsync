@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useHighlights, useRings, useSleepNights, useSummary, useWorkouts } from '../api/hooks'
+import { useHighlights, useObservations, useRings, useSleepNights, useSummary, useWorkouts } from '../api/hooks'
+import { ObservationCard } from '../components/ObservationCard'
 import { KpiTile } from '../components/KpiTile'
 import { HighlightList } from '../components/HighlightCard'
 import { RingsStrip } from '../components/Rings'
@@ -40,6 +41,7 @@ export function OverviewPage() {
   const nav = useNavigate()
   const summary = useSummary(personId, period.range, period.compare)
   const highlights = useHighlights(personId, period.range)
+  const observations = useObservations(personId)
   const last14 = useMemo(() => {
     const end = person?.last_date ? parseISO(person.last_date) : new Date()
     return { from: format(subDays(end, 13), 'yyyy-MM-dd'), to: format(end, 'yyyy-MM-dd') }
@@ -64,6 +66,22 @@ export function OverviewPage() {
   return (
     <>
       <PageHead title="Overview" sub={person ? <>{person.name} · {fmtDate(period.from)} – {fmtDate(period.to)}</> : undefined} page={page} />
+
+      {observations.data && observations.data.observations.length > 0 && (
+        <Section
+          title="Observations"
+          hint={`as of ${fmtDate(observations.data.as_of)} · ${observations.data.checked.length} checks`}
+          right={<Link to={`/p/${personId}/observations`} className="small">All observations →</Link>}
+          className=""
+        >
+          <div className="grid auto-wide" style={{ gap: 10, marginBottom: 0 }}>
+            {observations.data.observations.filter((o) => o.category !== 'data').slice(0, 4).map((o) => (
+              <ObservationCard key={o.id} o={o} personId={personId} compact />
+            ))}
+          </div>
+        </Section>
+      )}
+      <div style={{ height: 16 }} />
 
       {summary.isLoading && <Loading lines={2} />}
       {summary.error && <ErrorNote error={summary.error} />}

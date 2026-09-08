@@ -57,6 +57,7 @@ func NewRouter(h *handlers) *chi.Mux {
 			pr.Get("/series/{metric}", h.handleSeries)
 			pr.Get("/summary", h.handleSummary)
 			pr.Get("/highlights", h.handleHighlights)
+			pr.Get("/observations", h.handleObservations)
 			pr.Get("/activity/rings", h.handleRings)
 			pr.Get("/sleep/nights", h.handleSleepNights)
 			pr.Get("/heart/overview", h.handleHeartOverview)

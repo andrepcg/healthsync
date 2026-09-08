@@ -834,3 +834,56 @@ table.data tr.clickable {
 .err {
   color: var(--bad);
 }
+
+/* ---- observations ---- */
+.obs {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--faint);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  background: var(--surface);
+}
+.obs.bad {
+  border-left-color: var(--bad);
+}
+.obs.warn {
+  border-left-color: var(--warn);
+}
+.obs.good {
+  border-left-color: var(--good);
+}
+.obs.info {
+  border-left-color: var(--accent);
+}
+.obs-title {
+  font-weight: 600;
+  margin-top: 4px;
+}
+.obs-detail {
+  margin-top: 4px;
+  color: var(--text);
+}
+.obs-advice {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.obs-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 8px 0 0;
+  font-size: 12.5px;
+}
+.obs-evidence dt {
+  color: var(--faint);
+  display: inline;
+}
+.obs-evidence dd {
+  display: inline;
+  margin: 0 0 0 4px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}

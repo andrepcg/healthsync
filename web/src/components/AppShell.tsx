@@ -7,6 +7,7 @@ import { ImportBanner } from './ImportBanner'
 
 const NAV: { to: string; label: string; ico: string; section?: string }[] = [
   { to: 'overview', label: 'Overview', ico: '🏠' },
+  { to: 'observations', label: 'Observations', ico: '💡' },
   { to: 'activity', label: 'Activity', ico: '🔥', section: 'Health' },
   { to: 'heart', label: 'Heart', ico: '❤️' },
   { to: 'sleep', label: 'Sleep', ico: '🌙' },
