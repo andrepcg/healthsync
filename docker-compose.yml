@@ -1,0 +1,25 @@
+services:
+  healthsync:
+    image: ghcr.io/andrepcg/healthsync:latest
+    # To build locally instead of pulling from GHCR, comment `image:` above and
+    # uncomment:
+    # build: .
+    container_name: healthsync
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Europe/Lisbon
+      HEALTHSYNC_DATA_DIR: /data
+      HEALTHSYNC_NO_UPDATE_CHECK: "1"
+    volumes:
+      # Holds people.db plus one SQLite file per person. Back this up.
+      - healthsync-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  healthsync-data:

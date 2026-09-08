@@ -1,0 +1,16 @@
+.git
+bin/
+.data/
+*.zip
+*.xml
+*.db
+*.db-wal
+*.db-shm
+web/node_modules/
+web/dist/
+internal/web/dist/*
+!internal/web/dist/.gitkeep
+website/
+coverage.out
+coverage.html
+journals
