@@ -3,9 +3,11 @@ package server
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/BRO3886/healthsync/internal/people"
+	"github.com/BRO3886/healthsync/internal/storage"
 )
 
 func newTestServer(t *testing.T) (*handlers, http.Handler) {
@@ -330,6 +333,9 @@ func TestUpload_ImportsAndServesDashboardData(t *testing.T) {
 	if rr := do(t, router, "GET", "/api/people/"+id+"/ecg", nil, ""); rr.Code != 200 || strings.TrimSpace(rr.Body.String()) != "[]" {
 		t.Errorf("ecg list: %d %s", rr.Code, rr.Body.String())
 	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/ecg/1/analysis", nil, ""); rr.Code != 404 {
+		t.Errorf("analysis of missing ecg: %d", rr.Code)
+	}
 	rr = do(t, router, "GET", "/api/people/"+id+"/export.db", nil, "")
 	if rr.Code != 200 || !bytes.HasPrefix(rr.Body.Bytes(), []byte("SQLite format 3")) {
 		t.Errorf("export.db: %d", rr.Code)
@@ -464,5 +470,47 @@ func TestSkillIsRenderedForTheRequestHost(t *testing.T) {
 	h.skillFS = nil
 	if rr := do(t, router, "GET", "/skill/SKILL.md", nil, ""); rr.Code != 404 {
 		t.Errorf("no skill fs: %d", rr.Code)
+	}
+}
+
+func TestECGAnalysisEndpoint(t *testing.T) {
+	h, router := newTestServer(t)
+	id := createPerson(t, router, "Ana")
+	db, _ := h.store.DB(id)
+	// 30 s at 512 Hz, a 1 mV spike every second (60 bpm), little-endian float32 µV.
+	rate := 512
+	buf := make([]byte, 4*30*rate)
+	for i := 0; i < 30*rate; i++ {
+		// A QRS-like Gaussian spike ~25 ms wide, peak 1 mV.
+		d := float64(i%rate) / float64(rate)
+		if d > 0.5 {
+			d -= 1
+		}
+		v := float32(1000 * math.Exp(-d*d/(2*0.006*0.006)))
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+	ok, err := db.InsertECG(storage.ECGRow{RecordedDate: "2024-01-02 10:00:00", Classification: "Sinus Rhythm", SampleRateHz: float64(rate), SampleCount: 30 * rate, Samples: buf})
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	rr := do(t, router, "GET", "/api/people/"+id+"/ecg/1/analysis", nil, "")
+	var out struct {
+		Analysis struct {
+			Beats        int
+			HRMean       float64 `json:"hr_mean"`
+			Irregularity string
+			Quality      string
+		}
+	}
+	decode(t, rr, &out)
+	if rr.Code != 200 || out.Analysis.Beats < 29 || math.Abs(out.Analysis.HRMean-60) > 1 || out.Analysis.Irregularity != "regular" {
+		t.Errorf("analysis: %d %+v", rr.Code, out.Analysis)
+	}
+	// Listing backfills the average heart rate.
+	rr = do(t, router, "GET", "/api/people/"+id+"/ecg", nil, "")
+	var list []map[string]any
+	decode(t, rr, &list)
+	if len(list) != 1 || list[0]["avg_hr"] != 60.0 {
+		t.Errorf("avg_hr not backfilled: %v", list)
 	}
 }

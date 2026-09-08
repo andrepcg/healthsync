@@ -310,3 +310,37 @@ export interface ObservationReport {
   checked: string[]
   skipped: { check: string; reason: string }[]
 }
+
+export interface ECGAnalysis {
+  sample_rate: number
+  duration_s: number
+  beats: number
+  r_peaks_s: number[]
+  r_peaks_mv: number[]
+  rr_ms: number[]
+  hr_mean: number
+  hr_min: number
+  hr_max: number
+  sdnn_ms: number
+  rmssd_ms: number
+  pnn50_pct: number
+  rr_cv_pct: number
+  irregularity: 'regular' | 'mildly irregular' | 'irregular' | 'very irregular'
+  premature_beats: number
+  quality: 'good' | 'fair' | 'poor'
+  noise_mv: number
+  r_amplitude_mv: number
+  snr: number
+  notes: string[]
+  template_mv: number[]
+  template_t0_ms: number
+  template_dt_ms: number
+}
+
+export interface ECGAnalysisResponse {
+  id: number
+  recorded_at: string
+  classification: string
+  device_avg_hr?: number
+  analysis: ECGAnalysis
+}

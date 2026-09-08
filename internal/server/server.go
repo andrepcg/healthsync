@@ -78,6 +78,7 @@ func NewRouter(h *handlers) *chi.Mux {
 			pr.Get("/workouts/{wid}/route", h.handleWorkoutRoute)
 			pr.Get("/ecg", h.handleECGList)
 			pr.Get("/ecg/{eid}", h.handleECG)
+			pr.Get("/ecg/{eid}/analysis", h.handleECGAnalysis)
 			pr.Get("/tables/{table}", h.handleTable)
 			pr.Get("/export.db", h.handleExportDB)
 		})

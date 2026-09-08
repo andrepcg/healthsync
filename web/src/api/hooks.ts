@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, personPath, postJson, type Params } from './client'
 import type {
   Availability,
+  ECGAnalysisResponse,
   ECGDetail,
   ECGSummary,
   EnvironmentOverview,
@@ -156,6 +157,15 @@ export function useECG(id: string | undefined, eid: string | number | undefined,
   return useQuery({
     queryKey: ['ecg', id, eid, points],
     queryFn: () => fetchJson<ECGDetail>(personPath(id!, `/ecg/${eid}`), { points }),
+    enabled: !!id && eid !== undefined,
+    staleTime: Infinity,
+  })
+}
+
+export function useECGAnalysis(id: string | undefined, eid: string | number | undefined) {
+  return useQuery({
+    queryKey: ['ecg-analysis', id, eid],
+    queryFn: () => fetchJson<ECGAnalysisResponse>(personPath(id!, `/ecg/${eid}/analysis`)),
     enabled: !!id && eid !== undefined,
     staleTime: Infinity,
   })

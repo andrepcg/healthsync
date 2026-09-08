@@ -369,10 +369,20 @@ export function routeProfile(t: Tok, pts: { ele: number | null; speed: number | 
   }
 }
 
-/** ECG trace on a paper-like grid: 200 ms / 0.5 mV. */
-export function ecgTrace(t: Tok, samples: number[], rate: number, zoom = true): EChartsOption {
+/** ECG trace on a paper-like grid: 200 ms / 0.5 mV. Optional R-peak markers (seconds, mV). */
+export function ecgTrace(t: Tok, samples: number[], rate: number, zoom = true, rPeaks?: { s: number; mv: number }[]): EChartsOption {
   const data = samples.map((v, i) => [i / rate, v / 1000]) // seconds, mV
   const dur = samples.length / rate
+  const markPoint = rPeaks?.length
+    ? {
+        symbol: 'circle',
+        symbolSize: 7,
+        itemStyle: { color: t.accent, borderColor: t.surface, borderWidth: 1.5 },
+        label: { show: false },
+        data: rPeaks.map((p) => ({ coord: [p.s, p.mv] })),
+        silent: true,
+      }
+    : undefined
   return {
     grid: { left: 64, right: 16, top: 10, bottom: zoom ? 60 : 20 },
     tooltip: { trigger: 'axis', formatter: (p: unknown) => `${fmtNum((p as { data: [number, number] }[])[0].data[0], 3)} s · ${fmtNum((p as { data: [number, number] }[])[0].data[1], 3)} mV` },
@@ -389,7 +399,51 @@ export function ecgTrace(t: Tok, samples: number[], rate: number, zoom = true): 
     yAxis: { type: 'value', min: -1.5, max: 1.5, interval: 0.5, axisLabel: { formatter: (v: number) => `${v.toFixed(1)} mV`, color: t.faint }, splitLine: { show: true, lineStyle: { color: t.grid } } },
     dataZoom: zoom ? [{ type: 'inside', filterMode: 'none' }, { type: 'slider', height: 22, bottom: 8, filterMode: 'none', borderColor: t.border, fillerColor: t.accent + '22' }] : undefined,
     animation: false,
-    series: [{ type: 'line', data, symbol: 'none', lineStyle: { color: t.bad, width: 1.2 }, sampling: 'none', large: true }],
+    series: [{ type: 'line', data, symbol: 'none', lineStyle: { color: t.bad, width: 1.2 }, sampling: 'none', large: true, markPoint }],
+  }
+}
+
+/** RR intervals beat by beat: the quickest way to see rhythm regularity. */
+export function rrTachogram(t: Tok, rr: number[], premature: boolean): EChartsOption {
+  const med = [...rr].sort((a, b) => a - b)[Math.floor(rr.length / 2)] ?? 0
+  return {
+    grid: { left: 12, right: 16, top: 28, bottom: 8, containLabel: true },
+    tooltip: { trigger: 'axis', formatter: (p: unknown) => { const q = (p as { dataIndex: number; data: number }[])[0]; return `beat ${q.dataIndex + 1}<br/>RR ${fmtNum(q.data, 0)} ms · ${fmtNum(60000 / q.data, 0)} bpm` } },
+    xAxis: { type: 'category', data: rr.map((_, i) => i + 1), name: 'beat', axisLabel: { color: t.faint } },
+    yAxis: { type: 'value', name: 'ms', scale: true, axisLabel: { formatter: (v: number) => fmtNum(v, 0) } },
+    series: [
+      {
+        type: 'line',
+        data: rr,
+        symbol: 'circle',
+        symbolSize: 6,
+        lineStyle: { color: t.palette[1], width: 1.5 },
+        itemStyle: { color: (p: { data: number }) => (premature && p.data < 0.8 * med ? t.warn : t.palette[1]) },
+        markLine: { silent: true, symbol: 'none', lineStyle: { color: t.faint, type: 'dashed' }, data: [{ yAxis: med, label: { formatter: 'median', position: 'insideEndTop' } }] },
+      },
+    ],
+  }
+}
+
+/** Averaged beat with the regions where P, QRS and T normally sit. */
+export function beatTemplate(t: Tok, tpl: number[], t0: number, dt: number): EChartsOption {
+  const data = tpl.map((v, i) => [t0 + i * dt, v])
+  const area = (from: number, to: number, label: string, color: string) => [{ xAxis: from, name: label, itemStyle: { color, opacity: 0.1 }, label: { show: true, position: 'insideTop', color: t.muted, fontSize: 11 } }, { xAxis: to }]
+  return {
+    grid: { left: 12, right: 16, top: 28, bottom: 8, containLabel: true },
+    tooltip: { trigger: 'axis', formatter: (p: unknown) => { const q = (p as { data: [number, number] }[])[0]; return `${fmtNum(q.data[0], 0)} ms · ${fmtNum(q.data[1], 3)} mV` } },
+    xAxis: { type: 'value', min: Math.floor(t0 / 50) * 50, max: Math.ceil((t0 + tpl.length * dt) / 50) * 50, interval: 100, name: 'ms from R', axisLabel: { formatter: (v: number) => `${v}` , color: t.faint }, splitLine: { show: true, lineStyle: { color: t.grid } } },
+    yAxis: { type: 'value', name: 'mV', scale: true, axisLabel: { formatter: (v: number) => fmtNum(v, 1) } },
+    series: [
+      {
+        type: 'line',
+        data,
+        symbol: 'none',
+        lineStyle: { color: t.bad, width: 2 },
+        markArea: { silent: true, data: [area(-240, -80, 'P wave', t.palette[0]), area(-60, 60, 'QRS', t.palette[1]), area(120, 420, 'T wave', t.palette[5])] },
+        markLine: { silent: true, symbol: 'none', lineStyle: { color: t.faint }, data: [{ xAxis: 0, label: { formatter: 'R', position: 'insideStartBottom' } }] },
+      },
+    ],
   }
 }
 

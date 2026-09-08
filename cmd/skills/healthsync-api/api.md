@@ -55,6 +55,7 @@ Base URL: `{{BASE_URL}}`. All responses are JSON unless noted. Dates are
 | `/workouts/{wid}/route` | `format=json\|geojson\|gpx` | GPS points |
 | `/ecg` | `from`, `to` | `[{id, recorded_at, classification, symptoms, sample_rate, sample_count, device, avg_hr?}]` |
 | `/ecg/{eid}` | `points=N` (envelope) or none (full samples), `format=csv` | waveform in µV |
+| `/ecg/{eid}/analysis` | | `{id, recorded_at, classification, analysis:{beats, hr_mean, hr_min, hr_max, rr_ms:[...], sdnn_ms, rmssd_ms, pnn50_pct, rr_cv_pct, irregularity: regular\|mildly irregular\|irregular\|very irregular, premature_beats, quality: good\|fair\|poor, snr, r_amplitude_mv, notes:[...], template_mv:[...], template_t0_ms, template_dt_ms}}` — derived rhythm metrics; no PR/QRS/QT (not reliable from a wrist lead) |
 | `/tables/{table}` | `from`, `to`, `limit` (≤1000, default 100), `offset`, `order=asc\|desc`, `type` (for `other_quantity`/`other_category`), `format=csv` | `{table, columns, total, rows}`; table = metric key, table name, `workouts`, `activity_summary`, `ecg`, `hrv_beats`, `devices`, `profile`, `imports`, `workout_*` |
 | `/export.db` | | SQLite snapshot of the person's database (binary) |
 

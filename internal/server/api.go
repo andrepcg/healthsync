@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BRO3886/healthsync/internal/ecg"
 	"github.com/BRO3886/healthsync/internal/hk"
 	"github.com/BRO3886/healthsync/internal/insights"
 	"github.com/BRO3886/healthsync/internal/parser"
@@ -453,10 +454,28 @@ func (h *handlers) handleECGList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	rows, err := dbFrom(r).ListECG(p.From, p.To)
+	db := dbFrom(r)
+	rows, err := db.ListECG(p.From, p.To)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
+	}
+	// Recordings imported before analysis existed have no average HR yet;
+	// derive and cache it on first listing.
+	for i := range rows {
+		if rows[i].AverageHR != nil {
+			continue
+		}
+		full, err := db.GetECG(rows[i].ID)
+		if err != nil || full == nil {
+			continue
+		}
+		a := ecg.Analyze(parser.DecodeECGSamples(full.Samples), full.SampleRateHz)
+		if a.Beats >= 4 && a.Quality != "poor" {
+			hr := math.Round(a.HRMean)
+			rows[i].AverageHR = &hr
+			db.SetECGAverageHR(rows[i].ID, hr)
+		}
 	}
 	writeJSON(w, http.StatusOK, rows)
 }
@@ -502,6 +521,29 @@ func (h *handlers) handleECG(w http.ResponseWriter, r *http.Request) {
 		out["samples"] = samples
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// handleECGAnalysis derives rhythm metrics from one recording.
+func (h *handlers) handleECGAnalysis(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "eid"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid ecg id")
+		return
+	}
+	e, err := dbFrom(r).GetECG(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	if e == nil {
+		writeError(w, http.StatusNotFound, "ecg not found")
+		return
+	}
+	a := ecg.Analyze(parser.DecodeECGSamples(e.Samples), e.SampleRateHz)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": e.ID, "recorded_at": e.RecordedDate, "classification": e.Classification, "device_avg_hr": e.AverageHR,
+		"analysis": a,
+	})
 }
 
 // envelope reduces a waveform to n [min,max] pairs for thumbnails.

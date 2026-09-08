@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BRO3886/healthsync/internal/ecg"
 	"github.com/BRO3886/healthsync/internal/storage"
 )
 
@@ -103,6 +104,12 @@ func parseECG(r io.Reader, fileName string) (*storage.ECGRow, error) {
 	}
 	row.Samples = buf
 	row.SampleCount = len(samples)
+	if row.SampleRateHz > 0 {
+		if a := ecg.Analyze(samples, row.SampleRateHz); a.Beats >= 4 && a.Quality != "poor" {
+			hr := math.Round(a.HRMean)
+			row.AverageHR = &hr
+		}
+	}
 	return row, nil
 }
 

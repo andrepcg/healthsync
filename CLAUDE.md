@@ -23,6 +23,7 @@ internal/
                  sleep sessions), series.go (bucketed aggregation), summary.go (KPI tiles),
                  insights.go (highlights), sleepnights.go, rings.go, workouts*.go, tables.go
   insights/    — deterministic observation engine (baselines, load, sleep, habits, red flags)
+  ecg/         — single-lead ECG analysis: R peaks, HR, RR, HRV, irregularity, premature beats, template
   people/      — people.db registry + per-person *storage.DB cache
   server/      — chi router: /api/... JSON + SPA fallback; per-person async import jobs
   web/         — //go:embed all:dist (Vite build output; placeholder page if not built)
@@ -140,6 +141,18 @@ never need Node.
 - API: `GET /api/people/{id}/observations?as_of=YYYY-MM-DD` (default: last day with data). UI:
   Observations page + top-4 panel on Overview.
 
+### ECG analysis (`internal/ecg`)
+- `ecg.Analyze(samplesUV, rate)`: baseline removal → Pan–Tompkins-style R detection (adaptive threshold,
+  250 ms refractory, polarity-consistent snap) → RR intervals → HR mean/min/max, SDNN, RMSSD, pNN50,
+  RR coefficient of variation (regular < 7 %, mildly irregular < 12 %, irregular < 20 %, very irregular),
+  premature beats (short RR + compensatory pause), signal quality (R amplitude vs HF noise), and a
+  per-sample-median averaged beat (−300…+500 ms at ~2 ms). **No PR/QRS/QT**: not measurable reliably
+  from a wrist lead; the UI says so rather than showing wrong numbers.
+- Validated on the real export: sinus recordings CV 3–6 %, AFib-classified ones 21–54 %.
+- Used at import to fill `ecg.average_hr`, backfilled lazily by `GET …/ecg` for older rows, and served by
+  `GET …/ecg/{id}/analysis`. The ECG detail page shows R-peak markers, an RR tachogram, the averaged
+  beat with P/QRS/T bands and plain-language explanations of each metric and of Apple's classifications.
+
 ### Server / API
 - `/api` is mounted first; unknown `/api/*` → JSON 404; everything else → embedded SPA
   (`index.html` fallback, immutable cache on `/assets/*`).
@@ -186,6 +199,8 @@ never need Node.
   plus the original dedup/sleep-session suites
 - `internal/insights` — each detector on synthetic data (elevated RHR, noisy baseline must not fire,
   strain composite, load spike, short/irregular sleep, red flags, rings, stale/unworn), empty DB
+- `internal/ecg` — synthetic ECG generator: regular rhythm (60 bpm), premature beats, AF-like
+  irregularity, inverted lead, heavy noise, flat line, empty input
 - `internal/people` — CRUD, name lookup, file removal, DB cache, profile fill
 - `internal/server` — people CRUD, upload → poll → every dashboard endpoint, per-person 409,
   validation, SPA fallback vs JSON 404

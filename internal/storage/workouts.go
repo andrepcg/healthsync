@@ -206,6 +206,12 @@ func (db *DB) InsertECG(e ECGRow) (bool, error) {
 	return n > 0, nil
 }
 
+// SetECGAverageHR stores a derived average heart rate for a recording.
+func (db *DB) SetECGAverageHR(id int64, hr float64) error {
+	_, err := db.conn.Exec(`UPDATE ecg SET average_hr = ? WHERE id = ?`, hr, id)
+	return err
+}
+
 // ImportRow is one row of the imports table.
 type ImportRow struct {
 	ID           int64  `json:"id"`
