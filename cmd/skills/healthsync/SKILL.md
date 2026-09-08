@@ -42,6 +42,28 @@ Query Apple Health export data stored in a local SQLite database. This skill is 
 
 - **READ ONLY** — You must NEVER write to the database. No INSERT, UPDATE, DELETE, DROP, ALTER, or any write operations.
 - **Two query methods**: CLI (`healthsync query`) or direct SQLite (`sqlite3 ~/.healthsync/healthsync.db`)
+- **Multiple people**: when the dashboard server is used, each person has their own database at
+  `<data-dir>/people/<id>.db` (default data dir `~/.healthsync`, or `$HEALTHSYNC_DATA_DIR`). Pass
+  `--person <name>` to any CLI command to target it, e.g. `healthsync query steps --total --person Ana`.
+  Always confirm *whose* data you are reading before reporting a number.
+- **More tables than the list below**: workouts have children (`workout_statistics`, `workout_events`,
+  `workout_zones`, `workout_routes`, `workout_route_points`), plus `activity_summary` (rings per day),
+  `ecg` (waveform BLOB), `hrv_beats`, `devices`, `profile`, `imports`, and the generic
+  `other_quantity_records` / `other_category_records` for HK types without a dedicated table. Every
+  record row also has `source_version`, `device_id`, `creation_date` and a `metadata` JSON column.
+- **Percentages**: Apple stores SpO2 and body fat as fractions (0.97) with unit `%` in the raw tables.
+  Multiply by 100 when reporting.
+- **Multiple people**: when the dashboard server is used, each person has their own database at
+  `<data-dir>/people/<id>.db` (default data dir `~/.healthsync`, or `$HEALTHSYNC_DATA_DIR`). Pass
+  `--person <name>` to any CLI command to target it, e.g. `healthsync query steps --total --person Ana`.
+  Always confirm *whose* data you are reading before reporting a number.
+- **More tables than the list below**: workouts have children (`workout_statistics`, `workout_events`,
+  `workout_zones`, `workout_routes`, `workout_route_points`), plus `activity_summary` (rings per day),
+  `ecg` (waveform BLOB), `hrv_beats`, `devices`, `profile`, `imports`, and the generic
+  `other_quantity_records` / `other_category_records` for HK types without a dedicated table. Every
+  record row also has `source_version`, `device_id`, `creation_date` and a `metadata` JSON column.
+- **Percentages**: Apple stores SpO2 and body fat as fractions (0.97) with unit `%` in the raw tables.
+  Multiply by 100 when reporting.
 - **Prefer CLI** for simple queries. Use direct SQLite for complex aggregations, joins, or custom SQL.
 
 ## Gotchas

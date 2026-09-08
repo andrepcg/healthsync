@@ -1,77 +1,184 @@
 # healthsync
 
 ## Overview
-CLI + HTTP server for syncing Apple Health export data into a local SQLite database. Parses `.zip` or `.xml` exports, stores in `~/.healthsync/healthsync.db`.
+Self-hosted **family health dashboard** for Apple Health exports. A Go server
+(CLI + HTTP API + embedded React UI) imports `export.zip` files into one SQLite
+database per person and serves charts, highlights, period comparisons and raw
+data. No auth: it is meant for a home LAN / Tailscale. Ships as a Docker image
+for Portainer.
+
+Upstream (`BRO3886/healthsync`) is the single-user CLI; this fork adds the
+multi-person server, the web UI, 100% import coverage and Docker.
 
 ## Architecture
 ```
-cmd/           — Cobra CLI commands (parse, query, server, skills, version)
-  skills/      — embedded skill files (go:embed source)
-    healthsync/  — skill prompt + version file for agents
-  skills_embed.go — package cmd; //go:embed skills/healthsync
+cmd/           — Cobra CLI: parse, query, db, server, skills, version
+                 global flags: --db (single-user), --data-dir, --person <id|name>
 internal/
-  parser/      — Streaming XML parser with DTD stripping, zip support
-  storage/     — SQLite schema, batch inserts, query helpers
-  server/      — Chi HTTP server with async upload
-  skills/      — generic Install/Uninstall/DetectAgents logic
-scripts/       — install.sh (served at healthsync.sidv.dev/install)
-website/       — Hugo site (custom theme, no npm)
-  static/install — copy of scripts/install.sh, served at /install
+  hk/          — THE metric registry (leaf pkg): identifier → table, kind, agg, unit, group.
+                 Both parser and storage import it; schema DDL is generated from it.
+  parser/      — xml.go (streaming importer), export.go (zip/dir/reader abstraction),
+                 gpx.go (routes), ecg.go (CSV waveforms)
+  storage/     — sqlite.go (schema generated from hk + migrations), queries.go (CLI totals,
+                 sleep sessions), series.go (bucketed aggregation), summary.go (KPI tiles),
+                 insights.go (highlights), sleepnights.go, rings.go, workouts*.go, tables.go
+  people/      — people.db registry + per-person *storage.DB cache
+  server/      — chi router: /api/... JSON + SPA fallback; per-person async import jobs
+  web/         — //go:embed all:dist (Vite build output; placeholder page if not built)
+web/           — Vite + React + TypeScript SPA (ECharts, Leaflet, TanStack Query)
+Dockerfile, docker-compose.yml, .github/workflows/docker.yml, docs/deploy-portainer.md
+```
+
+Data directory (`--data-dir` → `$HEALTHSYNC_DATA_DIR` → `~/.healthsync`):
+```
+people.db          people(id, name UNIQUE NOCASE, color, emoji, dob, sex, ...)
+people/<id>.db     full schema per person
+tmp/               upload staging (same filesystem as the volume)
 ```
 
 ## Build & Test
 ```bash
-make build          # outputs bin/healthsync
-make test           # run all tests
-make release        # darwin/linux tar.gz + windows zip into bin/
-go test ./... -coverprofile=coverage.out && go tool cover -func=coverage.out
+make build          # web UI (npm) + Go binary with UI embedded → bin/healthsync
+make build-go       # Go only (serves a placeholder page if internal/web/dist is empty)
+make web            # cd web && npm run build  (→ internal/web/dist, git-ignored)
+make test           # go test ./... + tsc --noEmit + vitest
+make dev-api        # go run . server --data-dir ./.data
+make dev-web        # vite dev server on :5173 proxying /api → :8080
+make docker         # docker build -t healthsync:local .
 ```
-
-## Test Coverage (2026-02-25)
-- `internal/parser` — ~90% (~30 tests; expanded for 40+ metric types, blood pressure, category types)
-- `internal/storage` — ~88% (~55 tests; dedup, daily totals, all new tables)
-- `internal/server` — 73.7% (17 tests)
-- `internal/skills` — 8 tests (Install/Uninstall round-trip, idempotent reinstall, DetectAgents, etc.)
-- `cmd/` — 13 cases (formatCommas, QueryTotalSupportedTables)
-- Total: ~86 tests; ~88-90% on core packages
+`internal/web/dist/*` is git-ignored except `.gitkeep`; `go build`/`go test`
+never need Node.
 
 ## Key Technical Details
 
+### Registry (`internal/hk`)
+- Adding a metric = one line in `hk.Metrics`. The table, DDL, CLI name, API key, availability
+  and Explore listing all follow. Keys are hyphenated; `ByKey` also accepts underscores and
+  table names; `Lookup` accepts HK identifiers too.
+- `Agg` decides aggregation: `Cumulative` (sum after overlap dedup), `Sample` (avg/min/max),
+  `Duration` (interval length; sleep delegates to the session logic), `Event` (count).
+- Blood pressure sentinels are `Paired` and write to `blood_pressure`; they have no table.
+- Anything not in the registry lands in `other_quantity_records` / `other_category_records`
+  with its raw identifier in `type`. **Nothing from an export is dropped.**
+
 ### XML Parsing
-- DTD must be stripped via `io.Pipe` goroutine (not `bufio.Scanner` + `MultiReader` — scanner consumes too many bytes)
-- Must NOT call `decoder.Skip()` on `<HealthData>` root element — it skips all children
-- Category types (sleep, mindful_sessions, stand_hours) are `HKCategoryType` (no unit attribute) — `RecordColumns()` returns 4 columns, not 5; value stored as TEXT
-- Parser uses per-table `map[string][][]any` batch buffers — each table flushes at 1000 rows; all flush at EOF
-- Blood pressure staging: systolic + diastolic keyed by `{sourceName, startDate}`; row emitted only when both are staged; unpaired records silently dropped
-- Zip parsing is filename-agnostic: `findHealthExport` sniffs the first 32 KiB of each `.xml` entry for `<HealthData ` (trailing space guards against `<HealthDataArchive`). Handles localized filenames (e.g. `导出.xml` on Chinese-locale devices) without hardcoded locale lists. CDA sibling (`export_cda.xml`) is rejected naturally because its root is `<ClinicalDocument>`.
-- Timestamps are normalized at parse time: `normalizeTimestamp` strips the trailing ` ±HHMM` offset so stored values are plain `YYYY-MM-DD HH:MM:SS` local time. Applied to all date fields (Record start/end, Workout start/end, blood pressure staging key). SQLite date funcs (`julianday`, `date`) cannot parse the space-separated offset format, so this is required for `--total` aggregations to work.
+- DTD must be stripped via `io.Pipe` goroutine (not `bufio.Scanner` + `MultiReader`)
+- Must NOT call `decoder.Skip()` on `<HealthData>` **or `<Correlation>`**: Correlation wraps the
+  blood-pressure Records from the Health app; skipping it silently dropped them (fixed here).
+  Correlation `MetadataEntry` (e.g. `HKWasUserEntered`) is merged into the child records.
+- Records nested inside `<Workout>` (`EstimatedWorkoutEffortScore`) are captured via
+  `Workout.Records` and fed through the same `handleRecord` path.
+- Every record row carries fidelity columns: `source_version, device_id, creation_date,
+  metadata` (flat JSON object, NULL when empty). Devices are normalised into `devices` after
+  stripping the per-export `<<HKDevice: 0x…>, ` pointer prefix.
+- HRV beat-to-beat (`InstantaneousBeatsPerMinute`) → `hrv_beats(source_name, start_date, seq,
+  time, bpm)`; `time` is UTC wall-clock as exported, joined to `hrv` on (source_name, start_date).
+- `<ActivitySummary>` → `activity_summary` with `INSERT OR REPLACE` (goals change; latest wins).
+- `<Me>` → `profile` table; the server auto-fills a person's empty dob/sex from it.
+- Workouts insert individually (`UpsertWorkout` returns the id); statistics/events/zones are
+  delete-and-reinsert per workout, routes + points replaced per route, so re-import is idempotent.
+  The export can legitimately contain identical duplicate workouts (same app, same timestamps);
+  they collapse into one row by design.
+- GPX routes are resolved through the `Export` abstraction (`/workout-routes/x.gpx` relative to
+  the XML's directory inside the zip, with a suffix-match fallback). Distance skips points with
+  `hAcc > 50 m`; elevation gain uses a 3-point smoothed altitude.
+- ECGs are **CSV files not referenced by the XML** (`electrocardiograms/ecg_*.csv`). Discovery is
+  by `.csv` extension + a content sniff for `Sample Rate`. Voltages may use a **comma decimal
+  separator** (`-265,868` on pt locales); a purely numeric line is a sample, everything before is
+  the key/value header. Samples are stored as a little-endian float32 BLOB. Dedup on
+  `recorded_date`.
+- Category types (sleep, events, …) are `HKCategoryType` (no unit attribute) — TEXT value, no unit
+  column. Quantity tables have `value REAL NOT NULL`; a quantity record with a non-numeric value
+  is routed to `other_category_records` rather than dropped.
+- Timestamps are normalized at parse time: `normalizeTimestamp` strips the trailing ` ±HHMM` so
+  stored values are plain local `YYYY-MM-DD HH:MM:SS`. Day bucketing is therefore right at home
+  and off while travelling; documented, not fixed.
+- Progress callback receives a `Progress` struct (records, workouts, routes, points, ecgs,
+  activity days, hrv beats, errors). Decode errors are counted and surfaced as warnings in the
+  import row instead of silently `continue`d.
+- Real-world numbers: a 245 MB export.xml (528k records) imports in ~25 s into a ~160 MB DB.
 
 ### SQLite
-- WAL mode enabled for concurrent reads during server mode
-- `INSERT OR IGNORE` with UNIQUE constraints for dedup
-- Batch size: 1000 rows per transaction
-- DB path: `~/.healthsync/healthsync.db` (override with `--db`)
-- Schema variants: 5-col standard, 4-col no-unit (category types), 6-col blood_pressure, 10-col workouts
+- WAL mode; `INSERT OR IGNORE` with UNIQUE constraints for dedup; batches sized from the column
+  count so the bound-parameter cap is respected
+- Schema is generated in `migrate()` from `hk.Metrics`; `ensureColumns` adds the fidelity columns
+  to databases created before schema v2 (`PRAGMA user_version`)
+- Extra tables: devices, profile, imports, activity_summary, hrv_beats, ecg, workout_statistics,
+  workout_events, workout_zones, workout_routes, workout_route_points
 
-### Query
-- `TableNameMap` maps both hyphen and underscore CLI names to DB table names (60+ entries)
-- `--format table|json|csv` — CSV/JSON use `sortedKeys()` for deterministic column order
-- `--total` routes to dedicated daily-total methods (NOT `QueryRows`) with overlap dedup. Supported: `steps`, `active-energy`, `basal-energy`, `sleep`
-- `sleep --total` groups by **session**, not by a clock boundary. Segments are clustered into sessions by breaking on gaps > 2h, then each whole session is assigned one night from its onset (`onset - 12h`). An earlier version bucketed on `date(start_date, '-6 hours')`, which put the night boundary at 06:00 and tore any night that ran past 6 AM in half — see #17. Any fixed hour bisects someone's sleep, so no fixed hour is used. Overlapping segments are merged before summing. Naps (daytime onset AND under 4h) go in their own column and never inflate `hours`. **Nights with no records are omitted, never reported as zero** — "did not sleep" and "did not wear the watch" are different facts. Filters `value LIKE '%Asleep%'` to exclude InBed and Awake; both `--from` and `--to` gate on the computed night
-- Source-priority deduplication: Watch=2 > iPhone=1 > other=0 (uses `strings.Contains` on sourceName)
+### Query / aggregation
+- `TableNameMap`/`ValidTableNames` are derived from the registry; `ResolveTable` also accepts the
+  extra tables for Explore.
+- `--total` and `QuerySeries` for cumulative metrics dedup overlapping rows by source priority
+  (Watch=2 > iPhone=1 > other=0) before summing. A raw `SUM(value)` double counts.
+- `sleep --total` / `SleepNights` group by **session**, not by a clock boundary (see #17 upstream).
+  Nights with no data are omitted, never zero. Naps are separate. `SleepNights` adds per-stage
+  hours (overlaps merged per stage) and overnight vitals joined on the [onset, wake] window.
+- Percent metrics Apple stores as fractions (SpO2 0.97 with unit `%`) are rescaled to 0–100 in
+  `QuerySeries`/tiles/sleep vitals (`normalizePercent`) so every consumer sees one scale.
+- `Summary` tiles: cumulative/event → per-day mean over days with data + total; sample → weighted
+  mean; sleep → mean over nights present; "latest" metrics (VO2max, weight, body fat) → last
+  reading. Previous period = same length ending the day before `from`. Tiles with no rows are
+  absent, never zero.
+- `Highlights`: best days, ring streaks (zero goal ≠ closed), least-squares trends for resting HR
+  and HRV, first→last changes, sleep average with denominator, longest/most frequent workout,
+  per-type records vs all history, cardio event counts.
 
-### Server
-- `POST /api/upload` returns `202 Accepted`, parses async in goroutine
-- `GET /api/upload/status` for polling progress (uses `sync/atomic` counters)
-- Returns `409 Conflict` if a parse is already running
+### Server / API
+- `/api` is mounted first; unknown `/api/*` → JSON 404; everything else → embedded SPA
+  (`index.html` fallback, immutable cache on `/assets/*`).
+- Upload streams multipart to `DATA_DIR/tmp` (`MultipartReader`, 4 GB cap, no ReadTimeout).
+  Import jobs are per person: 409 only if *that* person is importing; DELETE is refused during
+  an import. Status carries the `Progress` struct; the People page polls it.
+- Routes: `/api/healthz`, `/api/metrics`, `/api/people[...]`, and per person: `upload`,
+  `upload/status`, `imports`, `availability`, `profile`, `series/{metric}`, `summary`,
+  `highlights`, `activity/rings`, `sleep/nights`, `heart/overview`, `heart/hrv[/{id}/beats]`,
+  `environment`, `workouts[/types|/{id}|/{id}/route?format=json|geojson|gpx]`,
+  `ecg[/{id}?points=N&format=csv]`, `tables/{table}?format=csv`, `export.db` (VACUUM INTO).
+- Compare has no endpoint: the UI composes it from `/series`.
+
+### Web UI (`web/`)
+- Period lives in the URL (`?preset=30d` or `?from&to`, `&compare=none`) and is anchored on the
+  person's **last day with data**, not today. `autoBucket`: day ≤ 92 d, week ≤ 460 d, else month.
+- `MetricChart` fetches a series and renders bars (cumulative/event) or a band line (sample);
+  cards hide themselves when there is no data. X axes are pinned to the selected period so single
+  points and sparse series render correctly.
+- Theme: CSS tokens in `styles/tokens.css`; ECharts theme is rebuilt from the tokens on switch.
+- Leaflet: call `fitBounds` **before** adding vector layers, or Leaflet throws in `_clipPoints`.
+- `ErrorBoundary` wraps the page outlet so one widget cannot blank the app.
+
+### Docker
+- Multi-stage: node:22-alpine (UI) → golang:1.26-alpine (`CGO_ENABLED=0`) → alpine:3.20 with
+  tzdata + wget, non-root uid 1000, `/data` volume, healthcheck on `/api/healthz`.
+- `.github/workflows/docker.yml` pushes `ghcr.io/<repo>` (amd64+arm64) on `main` and `v*` tags.
+  Make the GHCR package public once. Portainer instructions: `docs/deploy-portainer.md`.
+
+## Tests (2026-09-08)
+- `internal/hk` — registry uniqueness, lookups, column shapes
+- `internal/parser` — ~45 tests incl. regressions: BP inside `<Correlation>`, records nested in
+  `<Workout>`, unknown types → generic tables, workout children idempotent on re-import, zip with
+  GPX + ECG end to end, ECG comma/dot decimals, `<Me>`/`ExportDate`/rings/HRV beats, metadata JSON
+- `internal/storage` — ~70 tests: generated DDL for every table, v1→v2 column upgrade, series per
+  Agg × bucket, summary deltas, ring streaks, table rows/CSV/availability, imports, ECG, highlights,
+  plus the original dedup/sleep-session suites
+- `internal/people` — CRUD, name lookup, file removal, DB cache, profile fill
+- `internal/server` — people CRUD, upload → poll → every dashboard endpoint, per-person 409,
+  validation, SPA fallback vs JSON 404
+- `web/` — vitest: period math, formatting, LTTB; `tsc --noEmit` on build
+- No mocks: real temp SQLite databases and real zip fixtures throughout
 
 ## Dependencies
+Go:
 - `github.com/spf13/cobra` — CLI
 - `github.com/go-chi/chi/v5` — HTTP router
 - `modernc.org/sqlite` — pure Go SQLite (no CGO)
 - `github.com/jedib0t/go-pretty/v6` — table output (query command)
 - `github.com/charmbracelet/huh` — interactive prompts (skills install agent picker)
 - `github.com/fatih/color` — terminal color output
+
+Web (`web/package.json`): react, react-router-dom, @tanstack/react-query, echarts (tree-shaken via
+`echarts/core`), leaflet + react-leaflet, date-fns; dev: vite, typescript, vitest. No Tailwind, no
+component library — plain CSS with tokens.
 
 ## Install Script
 - `scripts/install.sh` — curl installer, supports macOS and Linux (arm64 + amd64)
@@ -118,5 +225,6 @@ Live submission only works once the key file is deployed to Cloudflare Pages. Ru
 
 ## Conventions
 - Conventional commits
+- Never render 0 for missing data; always show the denominator next to an average
 - No mocks — tests use real temp SQLite databases
 - Be proactive, not reactive — when given a task, just do it; don't ask for approval before starting

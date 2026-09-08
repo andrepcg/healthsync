@@ -1,10 +1,43 @@
 # healthsync
 
-Parse Apple Health exports into a local SQLite database — queryable by AI agents, the CLI, or directly via SQL.
+Self-hosted **family health dashboard** for Apple Health. Upload each person's
+`export.zip`, get a fast local web app with charts, highlights, period-over-period
+comparisons and access to every row of data. Everything stays on your machine in
+SQLite; no account, no cloud.
 
-The primary motivation is to make your Apple Health data accessible to AI coding agents. Run `healthsync skills install` to give Claude Code, Codex CLI, or OpenClaw the schema, CLI reference, and SQL examples it needs to answer questions about your health data in conversation.
+- **Complete import.** Every `Record` type (100+ known metrics plus a generic
+  fallback for anything new), workouts with heart-rate zones, events and GPS
+  routes, ECG waveforms, Activity rings, HRV beat-to-beat, metadata and devices.
+- **Multiple people.** One database per family member; switch with one click;
+  compare two people or two periods.
+- **Honest numbers.** Overlapping Watch/iPhone records are de-duplicated, sleep is
+  grouped by session (never by a clock hour), missing days are gaps, not zeros,
+  and every average shows its denominator.
+- **Docker-ready.** Single ~30 MB image with the UI embedded; one volume.
+  See [docs/deploy-portainer.md](docs/deploy-portainer.md).
 
-**Docs**: [healthsync.sidv.dev](https://healthsync.sidv.dev)
+> The dashboard has **no authentication**. Run it on your home network or a
+> Tailscale network only.
+
+## Run with Docker
+
+```bash
+docker compose up -d          # pulls ghcr.io/andrepcg/healthsync:latest
+open http://localhost:8080    # add a person, drop export.zip on their card
+```
+
+To build the image yourself: `make docker` (or swap `image:` for `build: .` in
+`docker-compose.yml`).
+
+## Run from source
+
+```bash
+make build                    # needs Go 1.24+ and Node 22 (builds the UI, embeds it)
+./bin/healthsync server --data-dir ./.data
+```
+
+For UI development: `make dev-api` in one terminal, `make dev-web` in another
+(Vite on :5173 proxies `/api` to :8080).
 
 ## Install
 
@@ -90,112 +123,56 @@ healthsync skills status
 healthsync skills uninstall --agent claude
 ```
 
-### HTTP server
-
-Start a server for receiving uploads (e.g. from iPhone Shortcuts over Tailscale):
+### CLI against a person's database
 
 ```bash
-healthsync server --port 8080 --host 0.0.0.0
+healthsync query steps --total --from 2026-08-01 --person Ana --data-dir ./.data
+healthsync parse ~/Downloads/export.zip --person Ana
+healthsync db info --person Ana
 ```
 
-Endpoints:
+Without `--person` the CLI uses the single-user database at `--db`
+(default `~/.healthsync/healthsync.db`), exactly as before.
 
-- `POST /api/upload` — upload a `.zip` or `.xml` file (multipart form, field: `file`). Returns `202 Accepted` and parses asynchronously.
-- `GET /api/upload/status` — poll parse job progress.
-- `GET /api/health/{table}?from=&to=&limit=` — query health data as JSON.
+### HTTP API
 
-```bash
-# Upload
-curl -F "file=@export.zip" http://localhost:8080/api/upload
+All endpoints are under `/api` and return JSON. Per person:
 
-# Check progress
-curl http://localhost:8080/api/upload/status
-
-# Query
-curl "http://localhost:8080/api/health/heart-rate?limit=5"
+```
+POST /api/people                          {"name": "Ana", "emoji": "🏃"}
+POST /api/people/{id}/upload              multipart "file" (export.zip) → 202, poll …/upload/status
+GET  /api/people/{id}/summary?from&to     KPI tiles vs previous period
+GET  /api/people/{id}/series/steps?from&to&bucket=day|week|month
+GET  /api/people/{id}/sleep/nights?from&to
+GET  /api/people/{id}/workouts/{wid}/route?format=gpx
+GET  /api/people/{id}/tables/heart-rate?from&to&format=csv
+GET  /api/people/{id}/export.db           snapshot of the SQLite file
 ```
 
-## Metrics
+## What gets imported
 
-### Currently parsed
+Everything. The registry in `internal/hk/registry.go` names 100+ HealthKit
+types (activity, heart, respiratory, sleep, body, mobility, running, cycling,
+hearing, environment, nutrition, mindfulness, reproductive health, symptoms);
+each gets its own table with `source_name, start_date, end_date, value[, unit],
+source_version, device_id, creation_date, metadata`. Any type the registry does
+not know lands in `other_quantity_records` / `other_category_records` with its
+raw identifier, so nothing in an export is ever dropped.
 
-**Cardiac / Vitals**
+Beyond `Record`s:
 
-| Table | Apple Health Type | Notes |
-|-------|-------------------|-------|
-| `heart_rate` | `HKQuantityTypeIdentifierHeartRate` | BPM |
-| `resting_heart_rate` | `HKQuantityTypeIdentifierRestingHeartRate` | Daily RHR |
-| `hrv` | `HKQuantityTypeIdentifierHeartRateVariabilitySDNN` | ms (SDNN) |
-| `heart_rate_recovery` | `HKQuantityTypeIdentifierHeartRateRecoveryOneMinute` | Post-exercise |
-| `respiratory_rate` | `HKQuantityTypeIdentifierRespiratoryRate` | Breaths/min |
-| `blood_pressure` | `HKQuantityTypeIdentifier BloodPressureSystolic/Diastolic` | Paired mmHg |
-| `spo2` | `HKQuantityTypeIdentifierOxygenSaturation` | 0-1 fraction |
-| `vo2_max` | `HKQuantityTypeIdentifierVO2Max` | mL/min·kg |
+| Data | Tables |
+|---|---|
+| Workouts with statistics, pause/segment events, heart-rate zones, metadata (METs, weather, indoor) | `workouts`, `workout_statistics`, `workout_events`, `workout_zones` |
+| GPS routes from the `workout-routes/*.gpx` files, with distance and elevation gain | `workout_routes`, `workout_route_points` |
+| ECG recordings from `electrocardiograms/*.csv` (512 Hz waveform, classification) | `ecg` |
+| Activity rings per day with goals | `activity_summary` |
+| HRV beat-to-beat samples | `hrv_beats` |
+| Blood pressure (paired systolic/diastolic, including readings inside `<Correlation>`) | `blood_pressure` |
+| Devices, profile (`<Me>`), import history | `devices`, `profile`, `imports` |
 
-**Activity / Energy**
-
-| Table | Apple Health Type | Notes |
-|-------|-------------------|-------|
-| `steps` | `HKQuantityTypeIdentifierStepCount` | `--total` supported |
-| `active_energy` | `HKQuantityTypeIdentifierActiveEnergyBurned` | kcal; `--total` supported |
-| `basal_energy` | `HKQuantityTypeIdentifierBasalEnergyBurned` | kcal; `--total` supported |
-| `exercise_time` | `HKQuantityTypeIdentifierAppleExerciseTime` | Minutes |
-| `stand_time` | `HKQuantityTypeIdentifierAppleStandTime` | Minutes |
-| `flights_climbed` | `HKQuantityTypeIdentifierFlightsClimbed` | Count |
-| `distance_walking_running` | `HKQuantityTypeIdentifierDistanceWalkingRunning` | km/mi |
-| `distance_cycling` | `HKQuantityTypeIdentifierDistanceCycling` | km/mi |
-
-**Body**
-
-| Table | Apple Health Type | Notes |
-|-------|-------------------|-------|
-| `body_mass` | `HKQuantityTypeIdentifierBodyMass` | kg/lb |
-| `body_mass_index` | `HKQuantityTypeIdentifierBodyMassIndex` | |
-| `height` | `HKQuantityTypeIdentifierHeight` | m/ft |
-
-**Mobility / Walking**
-
-| Table | Apple Health Type |
-|-------|-------------------|
-| `walking_speed` | `HKQuantityTypeIdentifierWalkingSpeed` |
-| `walking_step_length` | `HKQuantityTypeIdentifierWalkingStepLength` |
-| `walking_asymmetry` | `HKQuantityTypeIdentifierWalkingAsymmetryPercentage` |
-| `walking_double_support` | `HKQuantityTypeIdentifierWalkingDoubleSupportPercentage` |
-| `walking_steadiness` | `HKQuantityTypeIdentifierAppleWalkingSteadiness` |
-| `stair_ascent_speed` | `HKQuantityTypeIdentifierStairAscentSpeed` |
-| `stair_descent_speed` | `HKQuantityTypeIdentifierStairDescentSpeed` |
-| `six_minute_walk` | `HKQuantityTypeIdentifierSixMinuteWalkTestDistance` |
-
-**Running**
-
-| Table | Apple Health Type |
-|-------|-------------------|
-| `running_speed` | `HKQuantityTypeIdentifierRunningSpeed` |
-| `running_power` | `HKQuantityTypeIdentifierRunningPower` |
-| `running_stride_length` | `HKQuantityTypeIdentifierRunningStrideLength` |
-| `running_ground_contact_time` | `HKQuantityTypeIdentifierRunningGroundContactTime` |
-| `running_vertical_oscillation` | `HKQuantityTypeIdentifierRunningVerticalOscillation` |
-
-**Sleep / Mindfulness / Other**
-
-| Table | Apple Health Type | Notes |
-|-------|-------------------|-------|
-| `sleep` | `HKCategoryTypeIdentifierSleepAnalysis` | Sleep stages (no unit) |
-| `mindful_sessions` | `HKCategoryTypeIdentifierMindfulSession` | Category (no unit) |
-| `stand_hours` | `HKCategoryTypeIdentifierAppleStandHour` | Category (no unit) |
-| `wrist_temperature` | `HKQuantityTypeIdentifierAppleSleepingWristTemperature` | °C deviation |
-| `time_in_daylight` | `HKQuantityTypeIdentifierTimeInDaylight` | Minutes |
-| `dietary_water` | `HKQuantityTypeIdentifierDietaryWater` | mL/L |
-| `physical_effort` | `HKQuantityTypeIdentifierPhysicalEffort` | MET |
-| `walking_heart_rate` | `HKQuantityTypeIdentifierWalkingHeartRateAverage` | BPM |
-| `workouts` | All `HKWorkoutActivityType*` | duration, distance, energy |
-
-### Not yet parsed
-
-| Category | Types |
-|----------|-------|
-| **Audio** | EnvironmentalAudioExposure, HeadphoneAudioExposure, EnvironmentalSoundReduction |
-| **Category** | HandwashingEvent, ToothbrushingEvent, MenstrualFlow |
+Run `healthsync query --help` for the CLI names, or open **Explore data** in the
+dashboard to browse every table with CSV export.
 
 ## Design
 
