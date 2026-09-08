@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/BRO3886/healthsync/internal/people"
@@ -24,6 +25,10 @@ func newTestServer(t *testing.T) (*handlers, http.Handler) {
 	}
 	t.Cleanup(func() { store.Close() })
 	h := newHandlers(store, "test")
+	h.skillFS = fstest.MapFS{
+		"SKILL.md": {Data: []byte("---\nname: healthsync-api\n---\nBase: {{BASE_URL}}\nRef: {{BASE_URL}}/skill/api.md\n")},
+		"api.md":   {Data: []byte("# API {{BASE_URL}}\n")},
+	}
 	return h, NewRouter(h)
 }
 
@@ -239,6 +244,22 @@ func TestUpload_ImportsAndServesDashboardData(t *testing.T) {
 		t.Errorf("bad as_of: %d", rr.Code)
 	}
 
+	rr = do(t, router, "GET", "/api/people/"+id+"/digest?days=7", nil, "")
+	var digest struct {
+		Period       map[string]string
+		Summary      struct{ Tiles []map[string]any }
+		Observations struct {
+			AsOf string `json:"as_of"`
+		}
+		Sleep    struct{ Nights []map[string]any }
+		Workouts struct{ Total int }
+		Person   map[string]any
+	}
+	decode(t, rr, &digest)
+	if rr.Code != 200 || digest.Period["to"] != "2024-01-02" || digest.Period["from"] != "2023-12-27" || len(digest.Summary.Tiles) == 0 || digest.Observations.AsOf != "2024-01-02" || len(digest.Sleep.Nights) != 1 || digest.Workouts.Total != 1 || digest.Person["name"] != "Ana" {
+		t.Errorf("digest: %d %+v", rr.Code, digest)
+	}
+
 	rr = do(t, router, "GET", "/api/people/"+id+"/activity/rings?from=2024-01-01&to=2024-01-07", nil, "")
 	var rings struct{ Days []map[string]any }
 	decode(t, rr, &rings)
@@ -395,5 +416,53 @@ func TestHealthzMetricsAndSPAFallback(t *testing.T) {
 	rr = do(t, router, "GET", "/p/abc/overview", nil, "")
 	if rr.Code != 200 || !strings.Contains(rr.Header().Get("Content-Type"), "text/html") {
 		t.Errorf("spa fallback: %d %s", rr.Code, rr.Header().Get("Content-Type"))
+	}
+}
+
+func TestSkillIsRenderedForTheRequestHost(t *testing.T) {
+	h, router := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "http://10.0.0.14:1000/skill/SKILL.md", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != 200 || !strings.Contains(rr.Header().Get("Content-Type"), "text/markdown") {
+		t.Fatalf("skill: %d %s", rr.Code, rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rr.Body.String(), "Base: http://10.0.0.14:1000\n") || strings.Contains(rr.Body.String(), "{{BASE_URL}}") {
+		t.Errorf("base url not rendered from host: %s", rr.Body.String())
+	}
+
+	// Reverse proxy headers win over Host.
+	req = httptest.NewRequest("GET", "http://internal:8080/skill/api.md", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "health.home.lan")
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if !strings.Contains(rr.Body.String(), "https://health.home.lan") {
+		t.Errorf("forwarded headers ignored: %s", rr.Body.String())
+	}
+
+	// An explicit public URL wins over everything.
+	h.publicURL = "http://10.0.0.14:1000/"
+	rr = do(t, router, "GET", "/skill/SKILL.md", nil, "")
+	if !strings.Contains(rr.Body.String(), "Ref: http://10.0.0.14:1000/skill/api.md") {
+		t.Errorf("public url not applied: %s", rr.Body.String())
+	}
+
+	if rr := do(t, router, "GET", "/skill/../etc/passwd", nil, ""); rr.Code == 200 && strings.Contains(rr.Body.String(), "root:") {
+		t.Error("path traversal")
+	}
+	if rr := do(t, router, "GET", "/skill/nope.md", nil, ""); rr.Code != 404 {
+		t.Errorf("missing file: %d", rr.Code)
+	}
+	rr = do(t, router, "GET", "/skill", nil, "")
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), "hermes skills install") {
+		t.Errorf("skill index: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Without an embedded skill the endpoint is a clean 404, not the SPA.
+	h.skillFS = nil
+	if rr := do(t, router, "GET", "/skill/SKILL.md", nil, ""); rr.Code != 404 {
+		t.Errorf("no skill fs: %d", rr.Code)
 	}
 }

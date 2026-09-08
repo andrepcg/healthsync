@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 
@@ -12,8 +13,9 @@ import (
 )
 
 var (
-	serverPort int
-	serverHost string
+	serverPort      int
+	serverHost      string
+	serverPublicURL string
 )
 
 var serverCmd = &cobra.Command{
@@ -42,6 +44,7 @@ func defaultPort() int {
 func init() {
 	serverCmd.Flags().IntVar(&serverPort, "port", defaultPort(), "port to listen on ($PORT)")
 	serverCmd.Flags().StringVar(&serverHost, "host", "0.0.0.0", "host to bind to")
+	serverCmd.Flags().StringVar(&serverPublicURL, "public-url", os.Getenv("HEALTHSYNC_PUBLIC_URL"), "address agents should use to reach this server, e.g. http://10.0.0.14:1000; rendered into /skill/SKILL.md ($HEALTHSYNC_PUBLIC_URL). Default: derived from each request")
 	rootCmd.AddCommand(serverCmd)
 }
 
@@ -54,10 +57,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Data dir: %s\n", dataDir)
 
+	skillFS, err := fs.Sub(EmbeddedSkills, "skills/healthsync-api")
+	if err != nil {
+		return fmt.Errorf("embedded skill: %w", err)
+	}
+
 	return server.Start(server.Config{
-		Host:    serverHost,
-		Port:    serverPort,
-		Store:   store,
-		Version: Version,
+		Host:      serverHost,
+		Port:      serverPort,
+		Store:     store,
+		Version:   Version,
+		SkillFS:   skillFS,
+		PublicURL: serverPublicURL,
 	})
 }

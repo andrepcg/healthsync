@@ -171,6 +171,9 @@ func (h *handlers) handleHighlights(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, hl)
 }
 
+// insightsCompute is indirected so the digest and observations handlers share it.
+var insightsCompute = insights.Compute
+
 // handleObservations runs the rule-based insight engine as of a date
 // (default: the person's last day with data).
 func (h *handlers) handleObservations(w http.ResponseWriter, r *http.Request) {

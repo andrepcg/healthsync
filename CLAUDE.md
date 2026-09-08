@@ -152,6 +152,13 @@ never need Node.
   `environment`, `workouts[/types|/{id}|/{id}/route?format=json|geojson|gpx]`,
   `ecg[/{id}?points=N&format=csv]`, `tables/{table}?format=csv`, `export.db` (VACUUM INTO).
 - Compare has no endpoint: the UI composes it from `/series`.
+- `GET …/digest?days=N` bundles person, availability, summary (vs previous), observations, highlights,
+  sleep nights, workouts and a trimmed profile for agents: one call per report.
+- **Agent skill over HTTP**: `cmd/skills/healthsync-api/{SKILL.md,api.md}` are embedded and served at
+  `/skill/SKILL.md` and `/skill/api.md` with `{{BASE_URL}}` rendered from `--public-url` /
+  `$HEALTHSYNC_PUBLIC_URL`, else `X-Forwarded-Proto/Host`, else the request Host. Hermes Agent installs
+  it via `hermes skills install <url>/skill/SKILL.md --name healthsync`. Keep `api.md` in sync when
+  endpoints change; `go:embed` in `cmd/skills_embed.go` covers both skill dirs.
 
 ### Web UI (`web/`)
 - Period lives in the URL (`?preset=30d` or `?from&to`, `&compare=none`) and is anchored on the

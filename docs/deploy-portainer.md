@@ -50,6 +50,7 @@ variables** section of the stack; docker compose: a `.env` file, see
 | `TZ` | `Europe/Lisbon` | Container timezone (log timestamps). Health data itself is stored in the wearer's local wall-clock time as exported. |
 | `PORT` | `8080` | Port the process listens on *inside* the container. Only change this with `network_mode: host`; with a normal port mapping leave it alone. |
 | `HEALTHSYNC_DATA_DIR` | `/data` | Where databases are written. Keep it on the volume. |
+| `HEALTHSYNC_PUBLIC_URL` | derived from the request | Address rendered into the agent skill at `/skill/SKILL.md`, e.g. `http://10.0.0.14:1000`. Only needed behind a proxy that does not send `X-Forwarded-Host`. |
 
 Deploy, then open `http://<host>:<HEALTHSYNC_PORT>`.
 
@@ -93,3 +94,24 @@ applied automatically when the new version opens each database.
 make docker            # docker build -t healthsync:local .
 docker compose up -d   # after switching `image:` to `build: .`
 ```
+
+## 8. Agents on your network
+
+The server publishes an [Agent Skills](https://agentskills.io) skill describing
+its read-only API at `http://<host>:<port>/skill/SKILL.md` (full endpoint
+reference at `/skill/api.md`), with the base URL filled in for that server.
+
+Hermes Agent:
+
+```sh
+hermes skills install http://10.0.0.14:1000/skill/SKILL.md --name healthsync
+```
+
+Claude Code or Codex: save `SKILL.md` and `api.md` into a `healthsync-api/`
+folder under the agent's skills directory.
+
+The skill teaches the agent to start from `GET /api/people` and the one-call
+`GET /api/people/{id}/digest?days=7`, how to read the data correctly (no
+double counting, nights are sessions, missing days are unknown, percentages
+are 0–100) and to treat red flags as "discuss with a doctor". It is read-only;
+uploads are only done when a person explicitly asks.

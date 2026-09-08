@@ -15,6 +15,9 @@ services:
       TZ: ${TZ:-Europe/Lisbon}
       HEALTHSYNC_DATA_DIR: /data
       HEALTHSYNC_NO_UPDATE_CHECK: "1"
+      # Optional: the address agents should use, rendered into /skill/SKILL.md.
+      # Leave empty to derive it from each request.
+      HEALTHSYNC_PUBLIC_URL: ${HEALTHSYNC_PUBLIC_URL:-}
     volumes:
       # Holds people.db plus one SQLite file per person. Back this up.
       - healthsync-data:/data

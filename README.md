@@ -139,11 +139,17 @@ Without `--person` the CLI uses the single-user database at `--db`
 
 ### HTTP API
 
-All endpoints are under `/api` and return JSON. Per person:
+All endpoints are under `/api` and return JSON. The server also serves an
+agent skill documenting the whole API at `/skill/SKILL.md` (reference at
+`/skill/api.md`); Hermes Agent installs it with
+`hermes skills install http://<host>:<port>/skill/SKILL.md --name healthsync`.
+Per person:
 
 ```
 POST /api/people                          {"name": "Ana", "emoji": "🏃"}
 POST /api/people/{id}/upload              multipart "file" (export.zip) → 202, poll …/upload/status
+GET  /api/people/{id}/digest?days=7       one-call report bundle for agents
+GET  /api/people/{id}/observations        rule-based findings with evidence
 GET  /api/people/{id}/summary?from&to     KPI tiles vs previous period
 GET  /api/people/{id}/series/steps?from&to&bucket=day|week|month
 GET  /api/people/{id}/sleep/nights?from&to

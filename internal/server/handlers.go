@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net/http"
@@ -25,6 +26,9 @@ import (
 type handlers struct {
 	store   *people.Store
 	version string
+
+	skillFS   fs.FS
+	publicURL string
 
 	jobsMu sync.Mutex
 	jobs   map[string]*parseJob

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +24,12 @@ type Config struct {
 	Port    int
 	Store   *people.Store
 	Version string
+	// SkillFS holds the HTTP-API agent skill (SKILL.md, api.md) served under
+	// /skill/ with {{BASE_URL}} rendered. May be nil.
+	SkillFS fs.FS
+	// PublicURL is the address agents should use to reach this server, e.g.
+	// http://10.0.0.14:1000. When empty it is derived from each request.
+	PublicURL string
 }
 
 // NewRouter builds the full router: JSON API under /api and the embedded SPA
@@ -58,6 +65,7 @@ func NewRouter(h *handlers) *chi.Mux {
 			pr.Get("/summary", h.handleSummary)
 			pr.Get("/highlights", h.handleHighlights)
 			pr.Get("/observations", h.handleObservations)
+			pr.Get("/digest", h.handleDigest)
 			pr.Get("/activity/rings", h.handleRings)
 			pr.Get("/sleep/nights", h.handleSleepNights)
 			pr.Get("/heart/overview", h.handleHeartOverview)
@@ -78,6 +86,11 @@ func NewRouter(h *handlers) *chi.Mux {
 		})
 	})
 
+	// Agent skill, rendered for this server's address. Mounted before the SPA
+	// fallback so /skill/* never returns index.html.
+	r.Get("/skill", h.handleSkillIndex)
+	r.Get("/skill/{file}", h.handleSkillFile)
+
 	r.NotFound(web.Handler().ServeHTTP)
 	return r
 }
@@ -92,6 +105,8 @@ func noStore(next http.Handler) http.Handler {
 // Start creates and starts the HTTP server with graceful shutdown.
 func Start(cfg Config) error {
 	h := newHandlers(cfg.Store, cfg.Version)
+	h.skillFS = cfg.SkillFS
+	h.publicURL = cfg.PublicURL
 	r := NewRouter(h)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
