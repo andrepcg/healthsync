@@ -32,10 +32,13 @@ RUN apk add --no-cache ca-certificates tzdata wget \
 COPY --from=build /out/healthsync /usr/local/bin/healthsync
 ENV HEALTHSYNC_DATA_DIR=/data \
     HEALTHSYNC_NO_UPDATE_CHECK=1 \
+    PORT=8080 \
     TZ=Europe/Lisbon
 USER healthsync
 VOLUME ["/data"]
 EXPOSE 8080
+# The container listens on $PORT (default 8080). Change the host side with the
+# compose port mapping; change PORT only for network_mode: host setups.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/api/healthz >/dev/null || exit 1
-ENTRYPOINT ["healthsync", "server", "--host", "0.0.0.0", "--port", "8080"]
+  CMD wget -qO- "http://127.0.0.1:${PORT}/api/healthz" >/dev/null || exit 1
+ENTRYPOINT ["healthsync", "server", "--host", "0.0.0.0"]

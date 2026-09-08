@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -21,12 +23,24 @@ var serverCmd = &cobra.Command{
 API under /api. Each person gets their own SQLite database under
 <data-dir>/people/<id>.db; uploads are imported in the background.
 
-The data directory defaults to $HEALTHSYNC_DATA_DIR, then ~/.healthsync.`,
+The data directory defaults to $HEALTHSYNC_DATA_DIR, then ~/.healthsync.
+The listen port defaults to $PORT, then 8080.`,
 	RunE: runServer,
 }
 
+// defaultPort reads $PORT so containers can be reconfigured without changing
+// the entrypoint; falls back to 8080.
+func defaultPort() int {
+	if v := os.Getenv("PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return 8080
+}
+
 func init() {
-	serverCmd.Flags().IntVar(&serverPort, "port", 8080, "port to listen on")
+	serverCmd.Flags().IntVar(&serverPort, "port", defaultPort(), "port to listen on ($PORT)")
 	serverCmd.Flags().StringVar(&serverHost, "host", "0.0.0.0", "host to bind to")
 	rootCmd.AddCommand(serverCmd)
 }

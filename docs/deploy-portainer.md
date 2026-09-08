@@ -40,14 +40,18 @@ In Portainer: **Stacks → Add stack**.
 Paste the contents of `docker-compose.yml` and edit the `image:` line to your
 GHCR path.
 
-Environment variables you may want to change:
+Environment variables you may want to change (Portainer: the **Environment
+variables** section of the stack; docker compose: a `.env` file, see
+`.env.example`):
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `HEALTHSYNC_PORT` | `8080` | **Host** port the dashboard is published on. Set this if 8080 is taken, e.g. `HEALTHSYNC_PORT=8090`. The container always listens on 8080 internally. |
 | `TZ` | `Europe/Lisbon` | Container timezone (log timestamps). Health data itself is stored in the wearer's local wall-clock time as exported. |
+| `PORT` | `8080` | Port the process listens on *inside* the container. Only change this with `network_mode: host`; with a normal port mapping leave it alone. |
 | `HEALTHSYNC_DATA_DIR` | `/data` | Where databases are written. Keep it on the volume. |
 
-Deploy, then open `http://<host>:8080`.
+Deploy, then open `http://<host>:<HEALTHSYNC_PORT>`.
 
 ## 3. First run
 

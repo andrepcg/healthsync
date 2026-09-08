@@ -26,6 +26,9 @@ docker compose up -d          # pulls ghcr.io/andrepcg/healthsync:latest
 open http://localhost:8080    # add a person, drop export.zip on their card
 ```
 
+Port 8080 taken? Set `HEALTHSYNC_PORT` (in `.env`, see `.env.example`, or as a
+Portainer stack variable): `HEALTHSYNC_PORT=8090 docker compose up -d`.
+
 To build the image yourself: `make docker` (or swap `image:` for `build: .` in
 `docker-compose.yml`).
 

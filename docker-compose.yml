@@ -7,9 +7,12 @@ services:
     container_name: healthsync
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # Host port is configurable: set HEALTHSYNC_PORT in the stack's
+      # environment (Portainer: "Environment variables" on the stack, or a .env
+      # file next to this compose). The container always listens on 8080.
+      - "${HEALTHSYNC_PORT:-8080}:8080"
     environment:
-      TZ: Europe/Lisbon
+      TZ: ${TZ:-Europe/Lisbon}
       HEALTHSYNC_DATA_DIR: /data
       HEALTHSYNC_NO_UPDATE_CHECK: "1"
     volumes:
