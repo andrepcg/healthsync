@@ -31,3 +31,12 @@ marketing/
 # Work journals (symlinked to ~/projects/work-journals/healthsync, backed up there)
 journals
 
+
+# Web UI build output (embedded at build time; keep the dir so go:embed works)
+internal/web/dist/*
+!internal/web/dist/.gitkeep
+web/node_modules/
+web/dist/
+
+# Local dev data dir
+.data/

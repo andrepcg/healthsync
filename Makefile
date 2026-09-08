@@ -1,4 +1,4 @@
-.PHONY: build install test coverage clean tidy lint website website-dev indexnow release
+.PHONY: build build-go web web-install install test test-go test-web coverage clean tidy lint website website-dev indexnow release dev-api dev-web docker docker-up
 
 BINARY  := healthsync
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -6,15 +6,40 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)"
 
-build: ## Build the binary
+build: web build-go ## Build the web UI and the binary (UI embedded)
+
+build-go: ## Build the binary only (uses the embedded UI if already built, else a placeholder page)
 	@mkdir -p bin
 	go build $(LDFLAGS) -o bin/$(BINARY) .
+
+web-install: ## Install web dependencies
+	cd web && npm ci --no-audit --no-fund
+
+web: ## Build the web UI into internal/web/dist
+	cd web && npm run build
+
+dev-api: ## Run the API/server locally against ./.data (UI served from embedded build or placeholder)
+	go run . server --data-dir ./.data --port 8080
+
+dev-web: ## Run the Vite dev server (proxies /api to :8080)
+	cd web && npm run dev
+
+docker: ## Build the Docker image locally
+	docker build -t healthsync:local .
+
+docker-up: ## Build and start with docker compose
+	docker compose up -d --build
 
 install: ## Install to $GOPATH/bin
 	go install $(LDFLAGS) .
 
-test: ## Run tests
-	go test ./... -v -count=1
+test: test-go test-web ## Run Go and web tests
+
+test-go: ## Run Go tests
+	go test ./... -count=1
+
+test-web: ## Type-check and unit-test the web UI
+	cd web && npx tsc --noEmit && npx vitest run
 
 coverage: ## Run tests with coverage
 	go test ./... -coverprofile=coverage.out
