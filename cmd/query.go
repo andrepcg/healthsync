@@ -58,6 +58,10 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--total is only supported for: steps, active-energy, basal-energy, sleep")
 	}
 
+	dbPath, err := resolveDBPath()
+	if err != nil {
+		return err
+	}
 	db, err := storage.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)

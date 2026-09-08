@@ -1,48 +1,75 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"archive/zip"
-
-	"github.com/go-chi/chi/v5"
-
-	"github.com/BRO3886/healthsync/internal/storage"
+	"github.com/BRO3886/healthsync/internal/people"
 )
 
-func tempDB(t *testing.T) *storage.DB {
+func newTestServer(t *testing.T) (*handlers, http.Handler) {
 	t.Helper()
-	dir := t.TempDir()
-	db, err := storage.Open(filepath.Join(dir, "test.db"))
+	store, err := people.Open(t.TempDir())
 	if err != nil {
-		t.Fatalf("opening test db: %v", err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
-	return db
+	t.Cleanup(func() { store.Close() })
+	h := newHandlers(store, "test")
+	return h, NewRouter(h)
 }
 
-func newTestHandlers(t *testing.T) *handlers {
+func do(t *testing.T, router http.Handler, method, path string, body io.Reader, contentType string) *httptest.ResponseRecorder {
 	t.Helper()
-	return &handlers{db: tempDB(t), job: &parseJob{}}
+	req := httptest.NewRequest(method, path, body)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr
 }
 
-func testRouter(h *handlers) *chi.Mux {
-	r := chi.NewRouter()
-	r.Post("/api/upload", h.handleUpload)
-	r.Get("/api/upload/status", h.handleUploadStatus)
-	r.Get("/api/health/{table}", h.handleQuery)
-	return r
+func decode(t *testing.T, rr *httptest.ResponseRecorder, v any) {
+	t.Helper()
+	if err := json.Unmarshal(rr.Body.Bytes(), v); err != nil {
+		t.Fatalf("decoding %q: %v", rr.Body.String(), err)
+	}
 }
+
+func createPerson(t *testing.T, router http.Handler, name string) string {
+	t.Helper()
+	rr := do(t, router, "POST", "/api/people", strings.NewReader(fmt.Sprintf(`{"name":%q}`, name)), "application/json")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create person: %d %s", rr.Code, rr.Body.String())
+	}
+	var p struct{ ID string }
+	decode(t, rr, &p)
+	return p.ID
+}
+
+const testXML = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE HealthData [
+<!ELEMENT HealthData (Record*)>
+]>
+<HealthData locale="en_PT">
+ <ExportDate value="2024-01-10 08:00:00 +0000"/>
+ <Me HKCharacteristicTypeIdentifierDateOfBirth="1990-05-01" HKCharacteristicTypeIdentifierBiologicalSex="HKBiologicalSexFemale"/>
+ <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Watch" unit="count" value="1000" startDate="2024-01-01 08:00:00 +0000" endDate="2024-01-01 08:10:00 +0000"/>
+ <Record type="HKQuantityTypeIdentifierStepCount" sourceName="Watch" unit="count" value="2000" startDate="2024-01-02 08:00:00 +0000" endDate="2024-01-02 08:10:00 +0000"/>
+ <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Watch" unit="count/min" value="72" startDate="2024-01-01 08:00:00 +0000" endDate="2024-01-01 08:00:00 +0000"/>
+ <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Watch" value="HKCategoryValueSleepAnalysisAsleepCore" startDate="2024-01-01 23:00:00 +0000" endDate="2024-01-02 06:00:00 +0000"/>
+ <Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="30" durationUnit="min" totalDistance="5" totalDistanceUnit="km" sourceName="Watch" startDate="2024-01-02 09:00:00 +0000" endDate="2024-01-02 09:30:00 +0000"/>
+ <ActivitySummary dateComponents="2024-01-01" activeEnergyBurned="500" activeEnergyBurnedGoal="400" activeEnergyBurnedUnit="kcal" appleMoveTime="0" appleMoveTimeGoal="0" appleExerciseTime="40" appleExerciseTimeGoal="30" appleStandHours="12" appleStandHoursGoal="12"/>
+</HealthData>`
 
 func makeTestZip(t *testing.T, xmlContent string) []byte {
 	t.Helper()
@@ -50,347 +77,310 @@ func makeTestZip(t *testing.T, xmlContent string) []byte {
 	w := zip.NewWriter(&buf)
 	zf, err := w.Create("apple_health_export/export.xml")
 	if err != nil {
-		t.Fatalf("creating zip entry: %v", err)
+		t.Fatal(err)
 	}
 	zf.Write([]byte(xmlContent))
 	w.Close()
 	return buf.Bytes()
 }
 
-func uploadFile(t *testing.T, router http.Handler, filename string, content []byte) *httptest.ResponseRecorder {
+func upload(t *testing.T, router http.Handler, personID, filename string, content []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	part, err := mw.CreateFormFile("file", filename)
 	if err != nil {
-		t.Fatalf("creating form file: %v", err)
+		t.Fatal(err)
 	}
 	part.Write(content)
 	mw.Close()
-
-	req := httptest.NewRequest("POST", "/api/upload", &body)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-	return rr
+	return do(t, router, "POST", "/api/people/"+personID+"/upload", &body, mw.FormDataContentType())
 }
 
-// --- handleUpload ---
+func waitImport(t *testing.T, router http.Handler, personID string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		rr := do(t, router, "GET", "/api/people/"+personID+"/upload/status", nil, "")
+		var st map[string]any
+		decode(t, rr, &st)
+		if st["status"] == "completed" || st["status"] == "failed" {
+			return st
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("import did not finish")
+	return nil
+}
 
-func TestHandleUpload_ValidZip(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
+func TestPeople_CRUD(t *testing.T) {
+	_, router := newTestServer(t)
 
-	xml := `<?xml version="1.0" encoding="UTF-8"?>
-<HealthData locale="en_US">
-  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Watch" unit="count/min" value="72" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
-</HealthData>`
-	zipData := makeTestZip(t, xml)
+	rr := do(t, router, "GET", "/api/people", nil, "")
+	if rr.Code != 200 || strings.TrimSpace(rr.Body.String()) != "[]" {
+		t.Fatalf("empty list: %d %s", rr.Code, rr.Body.String())
+	}
 
-	rr := uploadFile(t, router, "export.zip", zipData)
+	id := createPerson(t, router, "Ana")
+	if rr := do(t, router, "POST", "/api/people", strings.NewReader(`{"name":"ana"}`), "application/json"); rr.Code != http.StatusConflict {
+		t.Errorf("duplicate name: %d", rr.Code)
+	}
+	if rr := do(t, router, "POST", "/api/people", strings.NewReader(`{"name":"x","bogus":1}`), "application/json"); rr.Code != http.StatusBadRequest {
+		t.Errorf("unknown field: %d", rr.Code)
+	}
 
+	rr = do(t, router, "GET", "/api/people/"+id, nil, "")
+	var v map[string]any
+	decode(t, rr, &v)
+	if v["name"] != "Ana" || v["has_data"] != false {
+		t.Errorf("get: %v", v)
+	}
+
+	rr = do(t, router, "PATCH", "/api/people/"+id, strings.NewReader(`{"emoji":"🏃","dob":"1990-05-01"}`), "application/json")
+	decode(t, rr, &v)
+	if rr.Code != 200 || v["emoji"] != "🏃" || v["dob"] != "1990-05-01" {
+		t.Errorf("patch: %d %v", rr.Code, v)
+	}
+
+	if rr := do(t, router, "GET", "/api/people/nope", nil, ""); rr.Code != http.StatusNotFound {
+		t.Errorf("unknown person: %d", rr.Code)
+	}
+	if rr := do(t, router, "DELETE", "/api/people/"+id, nil, ""); rr.Code != http.StatusNoContent {
+		t.Errorf("delete: %d", rr.Code)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id, nil, ""); rr.Code != http.StatusNotFound {
+		t.Errorf("deleted person still resolves: %d", rr.Code)
+	}
+}
+
+func TestUpload_ImportsAndServesDashboardData(t *testing.T) {
+	_, router := newTestServer(t)
+	id := createPerson(t, router, "Ana")
+
+	rr := upload(t, router, id, "export.zip", makeTestZip(t, testXML))
 	if rr.Code != http.StatusAccepted {
-		t.Errorf("expected 202 Accepted, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	st := waitImport(t, router, id)
+	if st["status"] != "completed" {
+		t.Fatalf("import: %v", st)
+	}
+	if st["profile_updated"] != true {
+		t.Error("dob/sex should be filled from <Me>")
+	}
+	prog := st["progress"].(map[string]any)
+	if prog["records"].(float64) != 4 || prog["workouts"].(float64) != 1 || prog["activity_days"].(float64) != 1 {
+		t.Errorf("progress: %v", prog)
 	}
 
-	var resp map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-	if resp["status"] != "accepted" {
-		t.Errorf("expected status accepted, got %v", resp["status"])
-	}
-	if resp["poll"] != "/api/upload/status" {
-		t.Errorf("expected poll URL, got %v", resp["poll"])
-	}
-}
-
-func TestHandleUpload_MissingFile(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	req := httptest.NewRequest("POST", "/api/upload", strings.NewReader(""))
-	req.Header.Set("Content-Type", "multipart/form-data; boundary=xxx")
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for missing file, got %d", rr.Code)
-	}
-}
-
-func TestHandleUpload_UnsupportedExtension(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	rr := uploadFile(t, router, "data.csv", []byte("some,data"))
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for .csv, got %d: %s", rr.Code, rr.Body.String())
-	}
-}
-
-func TestHandleUpload_ConflictWhileRunning(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	// Simulate a running job
-	h.job.mu.Lock()
-	h.job.running = true
-	h.job.mu.Unlock()
-
-	zipData := makeTestZip(t, `<?xml version="1.0"?><HealthData/>`)
-	rr := uploadFile(t, router, "export.zip", zipData)
-
-	if rr.Code != http.StatusConflict {
-		t.Errorf("expected 409 Conflict while running, got %d", rr.Code)
-	}
-}
-
-// --- handleUploadStatus ---
-
-func TestHandleUploadStatus_Idle(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	req := httptest.NewRequest("GET", "/api/upload/status", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rr.Code)
+	// Person view reflects data.
+	rr = do(t, router, "GET", "/api/people/"+id, nil, "")
+	var pv map[string]any
+	decode(t, rr, &pv)
+	if pv["has_data"] != true || pv["first_date"] != "2024-01-01" || pv["sex"] != "female" || pv["last_import_at"] == "" {
+		t.Errorf("person view: %v", pv)
 	}
 
-	var resp map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-	if resp["status"] != "idle" {
-		t.Errorf("expected idle status, got %v", resp["status"])
+	// Imports history.
+	rr = do(t, router, "GET", "/api/people/"+id+"/imports", nil, "")
+	var imports []map[string]any
+	decode(t, rr, &imports)
+	if len(imports) != 1 || imports[0]["status"] != "completed" || imports[0]["export_date"] != "2024-01-10 08:00:00" {
+		t.Errorf("imports: %v", imports)
 	}
-}
 
-func TestHandleUploadStatus_Running(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	h.job.mu.Lock()
-	h.job.running = true
-	h.job.startedAt = time.Now()
-	h.job.records.Store(5000)
-	h.job.workouts.Store(10)
-	h.job.mu.Unlock()
-
-	req := httptest.NewRequest("GET", "/api/upload/status", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	var resp map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-	if resp["status"] != "running" {
-		t.Errorf("expected running, got %v", resp["status"])
-	}
-	if resp["records"].(float64) != 5000 {
-		t.Errorf("expected 5000 records, got %v", resp["records"])
-	}
-}
-
-func TestHandleUploadStatus_Completed(t *testing.T) {
-	h := newTestHandlers(t)
-
-	// Upload a small file and wait for completion
-	router := testRouter(h)
-	xml := `<?xml version="1.0" encoding="UTF-8"?>
-<HealthData locale="en_US">
-  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Watch" unit="count/min" value="72" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
-</HealthData>`
-	zipData := makeTestZip(t, xml)
-	uploadFile(t, router, "export.zip", zipData)
-
-	// Wait for async parse to complete
-	for i := 0; i < 50; i++ {
-		time.Sleep(100 * time.Millisecond)
-		h.job.mu.RLock()
-		done := !h.job.running && h.job.result != nil
-		h.job.mu.RUnlock()
-		if done {
-			break
+	// Series, summary, highlights, rings, sleep, workouts, availability, tables.
+	rr = do(t, router, "GET", "/api/people/"+id+"/series/steps?from=2024-01-01&to=2024-01-31", nil, "")
+	var series struct {
+		Points []struct {
+			T string
+			V float64
 		}
 	}
+	decode(t, rr, &series)
+	if len(series.Points) != 2 || series.Points[1].V != 2000 {
+		t.Errorf("series: %+v", series)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/series/nope", nil, ""); rr.Code != 404 {
+		t.Errorf("unknown metric: %d", rr.Code)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/series/steps?from=bad", nil, ""); rr.Code != 400 {
+		t.Errorf("bad date: %d", rr.Code)
+	}
 
-	req := httptest.NewRequest("GET", "/api/upload/status", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
+	rr = do(t, router, "GET", "/api/people/"+id+"/summary?from=2024-01-01&to=2024-01-07", nil, "")
+	var summary struct {
+		Tiles    []map[string]any
+		Previous map[string]string
+	}
+	decode(t, rr, &summary)
+	if rr.Code != 200 || len(summary.Tiles) < 3 || summary.Previous["from"] != "2023-12-25" {
+		t.Errorf("summary: %d %+v", rr.Code, summary)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/summary", nil, ""); rr.Code != 400 {
+		t.Errorf("summary without period: %d", rr.Code)
+	}
 
-	var resp map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-	if resp["status"] != "completed" {
-		t.Errorf("expected completed, got %v", resp["status"])
+	rr = do(t, router, "GET", "/api/people/"+id+"/highlights?from=2024-01-01&to=2024-01-07", nil, "")
+	if rr.Code != 200 || !strings.HasPrefix(strings.TrimSpace(rr.Body.String()), "[") {
+		t.Errorf("highlights: %d %s", rr.Code, rr.Body.String())
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/activity/rings?from=2024-01-01&to=2024-01-07", nil, "")
+	var rings struct{ Days []map[string]any }
+	decode(t, rr, &rings)
+	if len(rings.Days) != 1 || rings.Days[0]["closed"].(map[string]any)["all"] != true {
+		t.Errorf("rings: %v", rings)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/sleep/nights?from=2024-01-01&to=2024-01-07", nil, "")
+	var nights struct{ Nights []map[string]any }
+	decode(t, rr, &nights)
+	if len(nights.Nights) != 1 || nights.Nights[0]["hours"].(float64) != 7 {
+		t.Errorf("nights: %v", nights)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/workouts", nil, "")
+	var workouts struct {
+		Total int
+		Items []map[string]any
+	}
+	decode(t, rr, &workouts)
+	if workouts.Total != 1 || workouts.Items[0]["distance_km"].(float64) != 5 {
+		t.Errorf("workouts: %+v", workouts)
+	}
+	wid := int(workouts.Items[0]["id"].(float64))
+	if rr := do(t, router, "GET", fmt.Sprintf("/api/people/%s/workouts/%d", id, wid), nil, ""); rr.Code != 200 {
+		t.Errorf("workout detail: %d", rr.Code)
+	}
+	if rr := do(t, router, "GET", fmt.Sprintf("/api/people/%s/workouts/%d/route", id, wid), nil, ""); rr.Code != 404 {
+		t.Errorf("route for routeless workout: %d", rr.Code)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/workouts/999", nil, ""); rr.Code != 404 {
+		t.Errorf("missing workout: %d", rr.Code)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/availability", nil, "")
+	var av struct {
+		Tables    []map[string]any
+		FirstDate string `json:"first_date"`
+	}
+	decode(t, rr, &av)
+	if av.FirstDate != "2024-01-01" || len(av.Tables) < 4 {
+		t.Errorf("availability: %+v", av)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/tables/heart-rate?limit=10", nil, "")
+	var tbl struct {
+		Total int
+		Rows  []map[string]any
+	}
+	decode(t, rr, &tbl)
+	if tbl.Total != 1 || len(tbl.Rows) != 1 {
+		t.Errorf("table: %+v", tbl)
+	}
+	rr = do(t, router, "GET", "/api/people/"+id+"/tables/steps?format=csv", nil, "")
+	if rr.Code != 200 || !strings.Contains(rr.Header().Get("Content-Type"), "text/csv") || strings.Count(rr.Body.String(), "\n") != 3 {
+		t.Errorf("csv: %d %q %q", rr.Code, rr.Header().Get("Content-Type"), rr.Body.String())
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/tables/nope", nil, ""); rr.Code != 404 {
+		t.Errorf("unknown table: %d", rr.Code)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/heart/overview?from=2024-01-01&to=2024-01-07", nil, "")
+	var heart map[string]any
+	decode(t, rr, &heart)
+	if _, ok := heart["heart_rate"]; !ok {
+		t.Errorf("heart overview: %v", heart)
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/ecg", nil, ""); rr.Code != 200 || strings.TrimSpace(rr.Body.String()) != "[]" {
+		t.Errorf("ecg list: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(t, router, "GET", "/api/people/"+id+"/export.db", nil, "")
+	if rr.Code != 200 || !bytes.HasPrefix(rr.Body.Bytes(), []byte("SQLite format 3")) {
+		t.Errorf("export.db: %d", rr.Code)
 	}
 }
 
-// --- parseJob.status ---
+func TestUpload_Validation(t *testing.T) {
+	_, router := newTestServer(t)
+	id := createPerson(t, router, "Ana")
 
-func TestParseJobStatus_Failed(t *testing.T) {
-	j := &parseJob{}
-	j.running = false
-	j.err = io.EOF
-	j.startedAt = time.Now().Add(-5 * time.Second)
-
-	s := j.status()
-	if s["status"] != "failed" {
-		t.Errorf("expected failed, got %v", s["status"])
+	if rr := upload(t, router, id, "notes.txt", []byte("x")); rr.Code != http.StatusBadRequest {
+		t.Errorf("bad extension: %d", rr.Code)
 	}
-	if s["error"] != "EOF" {
-		t.Errorf("expected EOF error, got %v", s["error"])
+	if rr := upload(t, router, "nope", "export.zip", makeTestZip(t, testXML)); rr.Code != http.StatusNotFound {
+		t.Errorf("unknown person: %d", rr.Code)
 	}
-}
-
-// --- handleQuery ---
-
-func TestHandleQuery_ValidTable(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	// Insert some data
-	cols := []string{"source_name", "start_date", "end_date", "value", "unit"}
-	h.db.BatchInsertRecords("heart_rate", cols, [][]any{
-		{"Watch", "2024-01-01 00:00:00", "2024-01-01 00:01:00", 72.0, "count/min"},
-	})
-
-	req := httptest.NewRequest("GET", "/api/health/heart-rate?limit=10", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", rr.Code, rr.Body.String())
-	}
-
-	var rows []map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &rows)
-	if len(rows) != 1 {
-		t.Errorf("expected 1 row, got %d", len(rows))
-	}
-}
-
-func TestHandleQuery_UnknownTable(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	req := httptest.NewRequest("GET", "/api/health/bogus", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for unknown table, got %d", rr.Code)
-	}
-}
-
-func TestHandleQuery_CustomLimit(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	cols := []string{"source_name", "start_date", "end_date", "value", "unit"}
-	records := make([][]any, 10)
-	for i := range records {
-		records[i] = []any{"Watch", "2024-01-01 00:00:00", "2024-01-01 00:01:00", float64(60 + i), "count/min"}
-	}
-	h.db.BatchInsertRecords("heart_rate", cols, records)
-
-	req := httptest.NewRequest("GET", "/api/health/heart-rate?limit=3", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	var rows []map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &rows)
-	if len(rows) != 3 {
-		t.Errorf("expected 3 rows with limit=3, got %d", len(rows))
-	}
-}
-
-func TestHandleQuery_InvalidLimitUsesDefault(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	req := httptest.NewRequest("GET", "/api/health/heart-rate?limit=abc", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	// Should not error, just use default limit
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rr.Code)
-	}
-}
-
-func TestHandleQuery_WithDateFilters(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	cols := []string{"source_name", "start_date", "end_date", "value", "unit"}
-	records := [][]any{
-		{"Watch", "2024-01-01 00:00:00", "2024-01-01 00:01:00", 72.0, "count/min"},
-		{"Watch", "2024-06-01 00:00:00", "2024-06-01 00:01:00", 75.0, "count/min"},
-		{"Watch", "2024-12-01 00:00:00", "2024-12-01 00:01:00", 80.0, "count/min"},
-	}
-	h.db.BatchInsertRecords("heart_rate", cols, records)
-
-	req := httptest.NewRequest("GET", "/api/health/heart-rate?from=2024-03-01&to=2024-09-01", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	var rows []map[string]any
-	json.Unmarshal(rr.Body.Bytes(), &rows)
-	if len(rows) != 1 {
-		t.Errorf("expected 1 row with date filters, got %d", len(rows))
-	}
-}
-
-func TestHandleQuery_EmptyResult(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	req := httptest.NewRequest("GET", "/api/health/steps", nil)
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rr.Code)
-	}
-
-	// Empty result should be null or empty array in JSON
-	body := strings.TrimSpace(rr.Body.String())
-	if body != "null" && body != "[]" {
-		t.Errorf("expected null or [], got %s", body)
-	}
-}
-
-// --- handleUpload with XML file ---
-
-func TestHandleUpload_XMLFile(t *testing.T) {
-	h := newTestHandlers(t)
-	router := testRouter(h)
-
-	// Create a temp XML file to reference in test
-	xml := `<?xml version="1.0" encoding="UTF-8"?>
-<HealthData locale="en_US">
-  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Watch" unit="count/min" value="72" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
-</HealthData>`
-
-	// Write to a temp file that the handler can access
-	tmpDir := t.TempDir()
-	xmlPath := filepath.Join(tmpDir, "export.xml")
-	os.WriteFile(xmlPath, []byte(xml), 0644)
-
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	part, _ := mw.CreateFormFile("file", "export.xml")
-	part.Write([]byte(xml))
+	mw.WriteField("other", "x")
 	mw.Close()
-
-	req := httptest.NewRequest("POST", "/api/upload", &body)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	rr := httptest.NewRecorder()
-	router.ServeHTTP(rr, req)
-
-	// XML uploads get written as temp .zip files, but the extension check
-	// is on the original filename. .xml should be accepted.
+	if rr := do(t, router, "POST", "/api/people/"+id+"/upload", &body, mw.FormDataContentType()); rr.Code != http.StatusBadRequest {
+		t.Errorf("missing file field: %d", rr.Code)
+	}
+	// A bad archive fails the import but leaves the job idle again.
+	rr := upload(t, router, id, "export.zip", []byte("not a zip"))
 	if rr.Code != http.StatusAccepted {
-		t.Errorf("expected 202 for .xml upload, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("accepted expected, got %d", rr.Code)
+	}
+	st := waitImport(t, router, id)
+	if st["status"] != "failed" || st["error"] == "" {
+		t.Errorf("failed status expected: %v", st)
+	}
+	imports := do(t, router, "GET", "/api/people/"+id+"/imports", nil, "")
+	if !strings.Contains(imports.Body.String(), `"status":"failed"`) {
+		t.Errorf("failed import not recorded: %s", imports.Body.String())
+	}
+	// Recovers: next upload works.
+	if rr := upload(t, router, id, "export.zip", makeTestZip(t, testXML)); rr.Code != http.StatusAccepted {
+		t.Errorf("upload after failure: %d", rr.Code)
+	}
+	waitImport(t, router, id)
+}
+
+func TestUpload_ConflictIsPerPerson(t *testing.T) {
+	h, router := newTestServer(t)
+	a := createPerson(t, router, "A")
+	b := createPerson(t, router, "B")
+
+	job := h.job(a)
+	job.mu.Lock()
+	job.running = true
+	job.mu.Unlock()
+
+	if rr := upload(t, router, a, "export.zip", makeTestZip(t, testXML)); rr.Code != http.StatusConflict {
+		t.Errorf("person A busy: %d", rr.Code)
+	}
+	if rr := do(t, router, "DELETE", "/api/people/"+a, nil, ""); rr.Code != http.StatusConflict {
+		t.Errorf("delete while importing: %d", rr.Code)
+	}
+	if rr := upload(t, router, b, "export.zip", makeTestZip(t, testXML)); rr.Code != http.StatusAccepted {
+		t.Errorf("person B should not be blocked: %d", rr.Code)
+	}
+	waitImport(t, router, b)
+}
+
+func TestHealthzMetricsAndSPAFallback(t *testing.T) {
+	_, router := newTestServer(t)
+	rr := do(t, router, "GET", "/api/healthz", nil, "")
+	if rr.Code != 200 || !strings.Contains(rr.Body.String(), `"status":"ok"`) {
+		t.Errorf("healthz: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = do(t, router, "GET", "/api/metrics", nil, "")
+	var metrics []map[string]any
+	decode(t, rr, &metrics)
+	if len(metrics) < 90 {
+		t.Errorf("metrics: %d", len(metrics))
+	}
+	// Unknown API path is JSON 404, never the SPA.
+	rr = do(t, router, "GET", "/api/nope", nil, "")
+	if rr.Code != 404 || !strings.Contains(rr.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("api 404: %d %s", rr.Code, rr.Header().Get("Content-Type"))
+	}
+	// Any non-API path serves the UI (or its placeholder) as HTML.
+	rr = do(t, router, "GET", "/p/abc/overview", nil, "")
+	if rr.Code != 200 || !strings.Contains(rr.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("spa fallback: %d %s", rr.Code, rr.Header().Get("Content-Type"))
 	}
 }

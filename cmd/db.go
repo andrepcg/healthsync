@@ -29,6 +29,10 @@ func init() {
 }
 
 func runDBInfo(cmd *cobra.Command, args []string) error {
+	dbPath, err := resolveDBPath()
+	if err != nil {
+		return err
+	}
 	db, err := storage.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)

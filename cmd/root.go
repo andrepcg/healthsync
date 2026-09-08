@@ -7,12 +7,17 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/BRO3886/healthsync/internal/people"
 	"github.com/BRO3886/healthsync/internal/skills"
 	"github.com/BRO3886/healthsync/internal/storage"
 	"github.com/BRO3886/healthsync/internal/update"
 )
 
-var dbPath string
+var (
+	dbPath  string
+	dataDir string
+	person  string
+)
 
 // updateResultCh receives the background update check result (if any).
 var updateResultCh = make(chan *update.Result, 1)
@@ -23,7 +28,9 @@ var rootCmd = &cobra.Command{
 	Long: `healthsync parses Apple Health export files (.zip or .xml) and stores
 the data in a local SQLite database for easy querying.
 
-Supports heart rate, steps, SpO2, VO2 Max, sleep analysis, and workouts.`,
+Imports every record type in the export (100+ metrics, workouts with routes
+and heart-rate zones, ECGs, activity rings, HRV beat-to-beat) and serves a
+multi-person web dashboard with "healthsync server".`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		if shouldCheckForUpdate(cmd) {
 			go func() {
@@ -51,7 +58,27 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&dbPath, "db", storage.DefaultDBPath(), "path to SQLite database")
+	rootCmd.PersistentFlags().StringVar(&dbPath, "db", storage.DefaultDBPath(), "path to SQLite database (single-user mode)")
+	rootCmd.PersistentFlags().StringVar(&dataDir, "data-dir", people.DefaultDataDir(), "data directory holding people.db and per-person databases ($HEALTHSYNC_DATA_DIR)")
+	rootCmd.PersistentFlags().StringVar(&person, "person", "", "operate on this person's database (id or name) inside --data-dir instead of --db")
+}
+
+// resolveDBPath returns the database to use: the --person database inside the
+// data dir when --person is set, otherwise --db.
+func resolveDBPath() (string, error) {
+	if person == "" {
+		return dbPath, nil
+	}
+	store, err := people.Open(dataDir)
+	if err != nil {
+		return "", fmt.Errorf("opening data dir: %w", err)
+	}
+	defer store.Close()
+	p, err := store.Get(person)
+	if err != nil {
+		return "", fmt.Errorf("person %q: %w", person, err)
+	}
+	return store.DBPath(p.ID), nil
 }
 
 // shouldCheckForUpdate returns false for commands/contexts where the check should be skipped.

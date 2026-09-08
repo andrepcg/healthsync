@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/BRO3886/healthsync/internal/people"
 	"github.com/BRO3886/healthsync/internal/server"
-	"github.com/BRO3886/healthsync/internal/storage"
 )
 
 var (
@@ -16,8 +16,13 @@ var (
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
-	Short: "Start the HTTP server for receiving health data uploads",
-	RunE:  runServer,
+	Short: "Start the web dashboard and HTTP API",
+	Long: `Start the HTTP server: a multi-person health dashboard (web UI) plus a JSON
+API under /api. Each person gets their own SQLite database under
+<data-dir>/people/<id>.db; uploads are imported in the background.
+
+The data directory defaults to $HEALTHSYNC_DATA_DIR, then ~/.healthsync.`,
+	RunE: runServer,
 }
 
 func init() {
@@ -27,17 +32,18 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
-	db, err := storage.Open(dbPath)
+	store, err := people.Open(dataDir)
 	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
+		return fmt.Errorf("opening data dir: %w", err)
 	}
-	defer db.Close()
+	defer store.Close()
 
-	fmt.Printf("Database: %s\n", dbPath)
+	fmt.Printf("Data dir: %s\n", dataDir)
 
 	return server.Start(server.Config{
-		Host: serverHost,
-		Port: serverPort,
-		DB:   db,
+		Host:    serverHost,
+		Port:    serverPort,
+		Store:   store,
+		Version: Version,
 	})
 }
