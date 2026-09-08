@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -38,6 +40,10 @@ func runParse(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("stat file: %w", err)
 	}
 
+	dbPath, err := resolveDBPath()
+	if err != nil {
+		return err
+	}
 	if verbose {
 		log.Printf("[verbose] input file: %s (%.2f MB)", path, float64(info.Size())/(1024*1024))
 		log.Printf("[verbose] database: %s", dbPath)
@@ -57,21 +63,23 @@ func runParse(cmd *cobra.Command, args []string) error {
 	spinFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	frame := 0
 
-	progress := func(records int64, workouts int64) {
+	progress := func(p parser.Progress) {
 		spin := spinFrames[frame%len(spinFrames)]
 		frame++
 		elapsed := time.Since(start).Round(time.Second)
-		rate := float64(records+workouts) / time.Since(start).Seconds()
-		fmt.Fprintf(os.Stderr, "\r  %s %s records · %s workouts · %.0f/s · %s   ",
+		rate := float64(p.Records) / time.Since(start).Seconds()
+		fmt.Fprintf(os.Stderr, "\r  %s %s records · %s workouts · %s routes · %s ECGs · %.0f/s · %s   ",
 			spin,
-			formatCommas(records),
-			formatCommas(workouts),
+			formatCommas(p.Records),
+			formatCommas(p.Workouts),
+			formatCommas(p.Routes),
+			formatCommas(p.ECGs),
 			rate,
 			elapsed,
 		)
 		if verbose && time.Since(lastLog) > 5*time.Second {
 			elapsed := time.Since(start).Round(time.Millisecond)
-			log.Printf("[verbose] progress: %d records, %d workouts (%.0f/s, elapsed %s)", records, workouts, rate, elapsed)
+			log.Printf("[verbose] progress: %d records, %d workouts (%.0f/s, elapsed %s)", p.Records, p.Workouts, rate, elapsed)
 			lastLog = time.Now()
 		}
 	}
@@ -80,7 +88,25 @@ func runParse(cmd *cobra.Command, args []string) error {
 		log.Printf("[verbose] starting XML parse...")
 	}
 
+	importID, importErr := db.BeginImport(filepath.Base(path), info.Size(), start.UTC().Format(time.RFC3339))
+
 	result, err := parser.ParseFile(path, db, progress)
+
+	if importErr == nil {
+		row := storage.ImportRow{FinishedAt: time.Now().UTC().Format(time.RFC3339), Status: "completed"}
+		if err != nil {
+			row.Status, row.Error = "failed", err.Error()
+		}
+		if result != nil {
+			row.ExportDate, row.Locale = result.ExportDate, result.Locale
+			row.Records, row.Workouts, row.Routes = result.Records, result.Workouts, result.Routes
+			row.ECGs, row.ActivityDays, row.HRVBeats, row.Errors = result.ECGs, result.ActivityDays, result.HRVBeats, result.Errors
+			if b, jerr := json.Marshal(result.Stats); jerr == nil {
+				row.TableStats = string(b)
+			}
+		}
+		db.FinishImport(importID, row)
+	}
 	if err != nil {
 		return fmt.Errorf("parsing file: %w", err)
 	}
@@ -88,26 +114,32 @@ func runParse(cmd *cobra.Command, args []string) error {
 	elapsed := time.Since(start)
 
 	fmt.Fprintf(os.Stderr, "\r\033[2K") // clear the spinner line
-	fmt.Printf("  Records:  %s\n", formatCommas(result.Total))
-	fmt.Printf("  Workouts: %s\n", formatCommas(result.Workouts))
-	fmt.Printf("  Duration: %s\n\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("  Records:        %s\n", formatCommas(result.Records))
+	fmt.Printf("  Workouts:       %s\n", formatCommas(result.Workouts))
+	fmt.Printf("  Routes:         %s (%s points)\n", formatCommas(result.Routes), formatCommas(result.RoutePoints))
+	fmt.Printf("  ECGs:           %s\n", formatCommas(result.ECGs))
+	fmt.Printf("  Activity days:  %s\n", formatCommas(result.ActivityDays))
+	fmt.Printf("  HRV beats:      %s\n", formatCommas(result.HRVBeats))
+	if result.Errors > 0 {
+		fmt.Printf("  Warnings:       %s\n", formatCommas(result.Errors))
+		for _, w := range result.Warnings {
+			fmt.Printf("    - %s\n", w)
+		}
+	}
+	if result.ExportDate != "" {
+		fmt.Printf("  Export date:    %s\n", result.ExportDate)
+	}
+	fmt.Printf("  Duration:       %s\n\n", elapsed.Round(time.Millisecond))
 
 	if verbose {
 		rate := float64(result.Total+result.Workouts) / elapsed.Seconds()
 		log.Printf("[verbose] parse complete: %.0f records/sec", rate)
 	}
 
-	// Print per-table counts
-	fmt.Println("Table counts:")
-	for _, name := range storage.ValidTableNames() {
-		count, err := db.CountRows(name)
-		if err != nil {
-			if verbose {
-				log.Printf("[verbose] error counting %s: %v", name, err)
-			}
-			continue
-		}
-		fmt.Printf("  %-12s %d\n", name, count)
+	// Print per-table insert stats for this run
+	fmt.Println("Rows written this run (inserted / skipped as duplicates):")
+	for _, st := range result.Stats {
+		fmt.Printf("  %-36s %10s / %s\n", st.Table, formatCommas(st.Inserted), formatCommas(st.Skipped))
 	}
 
 	return nil

@@ -32,8 +32,9 @@ func TestRecordColumns_Sleep(t *testing.T) {
 			t.Error("sleep table should not have unit column")
 		}
 	}
-	if len(cols) != 4 {
-		t.Errorf("expected 4 columns for sleep, got %d", len(cols))
+	// 4 base columns + 4 fidelity columns (source_version, device_id, creation_date, metadata)
+	if len(cols) != 8 {
+		t.Errorf("expected 8 columns for sleep, got %d", len(cols))
 	}
 }
 
@@ -49,8 +50,8 @@ func TestRecordColumns_NonSleep(t *testing.T) {
 		if !hasUnit {
 			t.Errorf("table %s should have unit column", table)
 		}
-		if len(cols) != 5 {
-			t.Errorf("expected 5 columns for %s, got %d", table, len(cols))
+		if len(cols) != 9 {
+			t.Errorf("expected 9 columns for %s, got %d", table, len(cols))
 		}
 	}
 }
@@ -59,14 +60,15 @@ func TestRecordColumns_NonSleep(t *testing.T) {
 
 func TestWorkoutColumns(t *testing.T) {
 	cols := WorkoutColumns()
-	if len(cols) != 10 {
-		t.Errorf("expected 10 workout columns, got %d", len(cols))
+	if len(cols) != 14 {
+		t.Errorf("expected 14 workout columns, got %d", len(cols))
 	}
 	expected := []string{
 		"activity_type", "source_name", "start_date", "end_date",
 		"duration", "duration_unit",
 		"total_distance", "total_distance_unit",
 		"total_energy_burned", "total_energy_burned_unit",
+		"source_version", "device_id", "creation_date", "metadata",
 	}
 	for i, e := range expected {
 		if cols[i] != e {
@@ -86,12 +88,12 @@ func TestTargetRecordTypes(t *testing.T) {
 		"HKQuantityTypeIdentifierVO2Max":           "vo2_max",
 		"HKCategoryTypeIdentifierSleepAnalysis":    "sleep",
 		// Spot-check new entries
-		"HKQuantityTypeIdentifierRestingHeartRate":        "resting_heart_rate",
-		"HKQuantityTypeIdentifierActiveEnergyBurned":      "active_energy",
-		"HKQuantityTypeIdentifierBodyMass":                "body_mass",
-		"HKCategoryTypeIdentifierMindfulSession":          "mindful_sessions",
-		"HKQuantityTypeIdentifierBloodPressureSystolic":   "blood_pressure_systolic",
-		"HKQuantityTypeIdentifierBloodPressureDiastolic":  "blood_pressure_diastolic",
+		"HKQuantityTypeIdentifierRestingHeartRate":       "resting_heart_rate",
+		"HKQuantityTypeIdentifierActiveEnergyBurned":     "active_energy",
+		"HKQuantityTypeIdentifierBodyMass":               "body_mass",
+		"HKCategoryTypeIdentifierMindfulSession":         "mindful_sessions",
+		"HKQuantityTypeIdentifierBloodPressureSystolic":  "blood_pressure_systolic",
+		"HKQuantityTypeIdentifierBloodPressureDiastolic": "blood_pressure_diastolic",
 	}
 	for k, v := range expected {
 		if got, ok := TargetRecordTypes[k]; !ok {
@@ -294,11 +296,12 @@ func TestParseFile_AllRecordTypes(t *testing.T) {
 	}
 }
 
-func TestParseFile_SkipsIrrelevantRecords(t *testing.T) {
-	// DietaryCaffeine and UVExposure are not in TargetRecordTypes — should be skipped
+func TestParseFile_UnknownTypesLandInOtherTables(t *testing.T) {
+	// Nothing is dropped: an identifier the registry does not know goes to the
+	// generic tables with its raw type, quantity or category by shape.
 	xml := makeTestXML(`
-  <Record type="HKQuantityTypeIdentifierDietaryCaffeine" sourceName="App" unit="mg" value="80" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
-  <Record type="HKQuantityTypeIdentifierUVExposure" sourceName="App" unit="count" value="3" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
+  <Record type="HKQuantityTypeIdentifierMadeUpFutureMetric" sourceName="App" unit="mg" value="80" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
+  <Record type="HKCategoryTypeIdentifierMadeUpFutureEvent" sourceName="App" value="HKCategoryValueNotApplicable" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
   <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Watch" unit="count/min" value="72" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
 `)
 	f := writeTestXML(t, xml)
@@ -308,15 +311,34 @@ func TestParseFile_SkipsIrrelevantRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	if result.Total != 1 {
-		t.Errorf("expected 1 matching record, got %d", result.Total)
+	if result.Total != 3 {
+		t.Errorf("expected 3 records stored, got %d", result.Total)
+	}
+	var typ string
+	var unit string
+	if err := db.Conn().QueryRow(`SELECT type, unit FROM other_quantity_records`).Scan(&typ, &unit); err != nil {
+		t.Fatalf("other_quantity_records: %v", err)
+	}
+	if typ != "HKQuantityTypeIdentifierMadeUpFutureMetric" || unit != "mg" {
+		t.Errorf("unexpected generic quantity row: %s %s", typ, unit)
+	}
+	var val string
+	if err := db.Conn().QueryRow(`SELECT value FROM other_category_records WHERE type = 'HKCategoryTypeIdentifierMadeUpFutureEvent'`).Scan(&val); err != nil {
+		t.Fatalf("other_category_records: %v", err)
+	}
+	if val != "HKCategoryValueNotApplicable" {
+		t.Errorf("unexpected generic category value %q", val)
 	}
 }
 
-func TestParseFile_ZeroMatchingRecords(t *testing.T) {
-	// DietaryCaffeine is not in TargetRecordTypes — should produce 0 records
+func TestParseFile_NewlyMappedTypes(t *testing.T) {
+	// Types that used to be dropped now have their own tables.
 	xml := makeTestXML(`
   <Record type="HKQuantityTypeIdentifierDietaryCaffeine" sourceName="App" unit="mg" value="80" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
+  <Record type="HKQuantityTypeIdentifierHeadphoneAudioExposure" sourceName="iPhone" unit="dBASPL" value="72.7" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
+  <Record type="HKCategoryTypeIdentifierLowHeartRateEvent" sourceName="Watch" value="HKCategoryValueNotApplicable" startDate="2024-01-01 03:00:00 +0000" endDate="2024-01-01 03:10:00 +0000">
+    <MetadataEntry key="HKHeartRateEventThreshold" value="40 count/min"/>
+  </Record>
 `)
 	f := writeTestXML(t, xml)
 	db := tempDB(t)
@@ -325,8 +347,20 @@ func TestParseFile_ZeroMatchingRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	if result.Total != 0 {
-		t.Errorf("expected 0 records, got %d", result.Total)
+	if result.Total != 3 {
+		t.Errorf("expected 3 records, got %d", result.Total)
+	}
+	for table, want := range map[string]int{"dietary_caffeine": 1, "headphone_audio_exposure": 1, "low_heart_rate_events": 1, "other_quantity_records": 0} {
+		var n int
+		db.Conn().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&n)
+		if n != want {
+			t.Errorf("%s: expected %d rows, got %d", table, want, n)
+		}
+	}
+	var meta string
+	db.Conn().QueryRow(`SELECT metadata FROM low_heart_rate_events`).Scan(&meta)
+	if meta != `{"HKHeartRateEventThreshold":"40 count/min"}` {
+		t.Errorf("metadata not captured: %q", meta)
 	}
 }
 
@@ -378,9 +412,9 @@ func TestParseFile_ProgressCallback(t *testing.T) {
 	db := tempDB(t)
 
 	called := false
-	progress := func(records int64, workouts int64) {
+	progress := func(p Progress) {
 		called = true
-		if records < 0 {
+		if p.Records < 0 {
 			t.Error("negative record count in progress")
 		}
 	}
@@ -509,7 +543,7 @@ func TestParseFile_ZipWithLocalizedExport(t *testing.T) {
   <Record type="HKQuantityTypeIdentifierStepCount" sourceName="iPhone" unit="count" value="500" startDate="2024-01-01 00:00:00 +0000" endDate="2024-01-01 00:01:00 +0000"/>
 `)
 	zipPath := makeTestZipEntries(t, map[string]string{
-		"apple_health_export/导出.xml":       xml,
+		"apple_health_export/导出.xml":         xml,
 		"apple_health_export/export_cda.xml": "<ClinicalDocument></ClinicalDocument>",
 	})
 	db := tempDB(t)
@@ -631,8 +665,8 @@ func TestParseFile_RecordWithMetadata(t *testing.T) {
 func TestRecordColumns_CategoryTables(t *testing.T) {
 	for _, tbl := range []string{"mindful_sessions", "stand_hours"} {
 		cols := RecordColumns(tbl)
-		if len(cols) != 4 {
-			t.Errorf("%s: expected 4 columns, got %d", tbl, len(cols))
+		if len(cols) != 8 {
+			t.Errorf("%s: expected 8 columns, got %d", tbl, len(cols))
 		}
 		for _, c := range cols {
 			if c == "unit" {
@@ -644,10 +678,10 @@ func TestRecordColumns_CategoryTables(t *testing.T) {
 
 func TestBloodPressureColumns(t *testing.T) {
 	cols := BloodPressureColumns()
-	if len(cols) != 6 {
-		t.Errorf("expected 6 blood pressure columns, got %d", len(cols))
+	if len(cols) != 10 {
+		t.Errorf("expected 10 blood pressure columns, got %d", len(cols))
 	}
-	expected := []string{"source_name", "start_date", "end_date", "systolic", "diastolic", "unit"}
+	expected := []string{"source_name", "start_date", "end_date", "systolic", "diastolic", "unit", "source_version", "device_id", "creation_date", "metadata"}
 	for i, e := range expected {
 		if cols[i] != e {
 			t.Errorf("column %d: expected %s, got %s", i, e, cols[i])
@@ -1067,7 +1101,7 @@ func TestParseXML_TimestampsNormalized(t *testing.T) {
 	</HealthData>`
 
 	db := tempDB(t)
-	_, err := parseXML(strings.NewReader(xmlData), db, nil)
+	_, err := ParseReader(strings.NewReader(xmlData), db, nil)
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
@@ -1110,7 +1144,7 @@ func TestParseXML_WorkoutTimestampsNormalized(t *testing.T) {
 	</HealthData>`
 
 	db := tempDB(t)
-	_, err := parseXML(strings.NewReader(xmlData), db, nil)
+	_, err := ParseReader(strings.NewReader(xmlData), db, nil)
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
