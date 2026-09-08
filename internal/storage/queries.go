@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/BRO3886/healthsync/internal/hk"
 )
 
 // TableInfo holds per-table stats for db info output.
@@ -103,129 +105,55 @@ type QueryParams struct {
 	Offset int
 }
 
-// TableNameMap maps CLI-friendly names to actual table names.
-var TableNameMap = map[string]string{
-	// Existing
-	"heart-rate": "heart_rate",
-	"heart_rate": "heart_rate",
-	"steps":      "steps",
-	"spo2":       "spo2",
-	"vo2max":     "vo2_max",
-	"vo2_max":    "vo2_max",
-	"sleep":      "sleep",
-	"workouts":   "workouts",
+// TableNameMap maps CLI-friendly names (hyphen and underscore forms, plus raw
+// table names) to actual table names. It is built from the hk registry so the
+// CLI, the API and the schema can never disagree.
+var TableNameMap = buildTableNameMap()
 
-	// Cardiac vitals
-	"resting-heart-rate":  "resting_heart_rate",
-	"resting_heart_rate":  "resting_heart_rate",
-	"hrv":                 "hrv",
-	"heart-rate-recovery": "heart_rate_recovery",
-	"heart_rate_recovery": "heart_rate_recovery",
-	"respiratory-rate":    "respiratory_rate",
-	"respiratory_rate":    "respiratory_rate",
-	"blood-pressure":      "blood_pressure",
-	"blood_pressure":      "blood_pressure",
-
-	// Activity / Energy
-	"active-energy":   "active_energy",
-	"active_energy":   "active_energy",
-	"basal-energy":    "basal_energy",
-	"basal_energy":    "basal_energy",
-	"exercise-time":   "exercise_time",
-	"exercise_time":   "exercise_time",
-	"stand-time":      "stand_time",
-	"stand_time":      "stand_time",
-	"flights-climbed": "flights_climbed",
-	"flights_climbed": "flights_climbed",
-
-	// Distance
-	"distance-walking-running": "distance_walking_running",
-	"distance_walking_running": "distance_walking_running",
-	"distance-cycling":         "distance_cycling",
-	"distance_cycling":         "distance_cycling",
-
-	// Body composition
-	"body-mass":       "body_mass",
-	"body_mass":       "body_mass",
-	"bmi":             "body_mass_index",
-	"body-mass-index": "body_mass_index",
-	"body_mass_index": "body_mass_index",
-	"height":          "height",
-
-	// Mobility / Walking
-	"walking-speed":          "walking_speed",
-	"walking_speed":          "walking_speed",
-	"walking-step-length":    "walking_step_length",
-	"walking_step_length":    "walking_step_length",
-	"walking-asymmetry":      "walking_asymmetry",
-	"walking_asymmetry":      "walking_asymmetry",
-	"walking-double-support": "walking_double_support",
-	"walking_double_support": "walking_double_support",
-	"walking-steadiness":     "walking_steadiness",
-	"walking_steadiness":     "walking_steadiness",
-	"stair-ascent-speed":     "stair_ascent_speed",
-	"stair_ascent_speed":     "stair_ascent_speed",
-	"stair-descent-speed":    "stair_descent_speed",
-	"stair_descent_speed":    "stair_descent_speed",
-	"six-minute-walk":        "six_minute_walk",
-	"six_minute_walk":        "six_minute_walk",
-
-	// Running metrics
-	"running-speed":                "running_speed",
-	"running_speed":                "running_speed",
-	"running-power":                "running_power",
-	"running_power":                "running_power",
-	"running-stride-length":        "running_stride_length",
-	"running_stride_length":        "running_stride_length",
-	"running-ground-contact-time":  "running_ground_contact_time",
-	"running_ground_contact_time":  "running_ground_contact_time",
-	"running-vertical-oscillation": "running_vertical_oscillation",
-	"running_vertical_oscillation": "running_vertical_oscillation",
-
-	// Other quantity types
-	"wrist-temperature":  "wrist_temperature",
-	"wrist_temperature":  "wrist_temperature",
-	"time-in-daylight":   "time_in_daylight",
-	"time_in_daylight":   "time_in_daylight",
-	"dietary-water":      "dietary_water",
-	"dietary_water":      "dietary_water",
-	"physical-effort":    "physical_effort",
-	"physical_effort":    "physical_effort",
-	"walking-heart-rate": "walking_heart_rate",
-	"walking_heart_rate": "walking_heart_rate",
-
-	// Category types
-	"mindful-sessions": "mindful_sessions",
-	"mindful_sessions": "mindful_sessions",
-	"stand-hours":      "stand_hours",
-	"stand_hours":      "stand_hours",
+func buildTableNameMap() map[string]string {
+	m := make(map[string]string, len(hk.ByKey)+8)
+	for key, metric := range hk.ByKey {
+		if metric.Paired {
+			continue
+		}
+		m[key] = metric.Table
+	}
+	m["blood-pressure"] = hk.BloodPressureTable
+	m["blood_pressure"] = hk.BloodPressureTable
+	m["workouts"] = hk.WorkoutsTable
+	m["other-quantity"] = hk.OtherQuantityTable
+	m["other_quantity"] = hk.OtherQuantityTable
+	m[hk.OtherQuantityTable] = hk.OtherQuantityTable
+	m["other-category"] = hk.OtherCategoryTable
+	m["other_category"] = hk.OtherCategoryTable
+	m[hk.OtherCategoryTable] = hk.OtherCategoryTable
+	return m
 }
 
-// ValidTableNames returns the list of valid CLI table names.
+// ValidTableNames returns the list of valid CLI table names in registry order.
 func ValidTableNames() []string {
-	return []string{
-		// Existing
-		"heart-rate", "steps", "spo2", "vo2max", "sleep", "workouts",
-		// Cardiac vitals
-		"resting-heart-rate", "hrv", "heart-rate-recovery", "respiratory-rate", "blood-pressure",
-		// Activity / Energy
-		"active-energy", "basal-energy", "exercise-time", "stand-time", "flights-climbed",
-		// Distance
-		"distance-walking-running", "distance-cycling",
-		// Body composition
-		"body-mass", "bmi", "height",
-		// Mobility / Walking
-		"walking-speed", "walking-step-length", "walking-asymmetry",
-		"walking-double-support", "walking-steadiness",
-		"stair-ascent-speed", "stair-descent-speed", "six-minute-walk",
-		// Running metrics
-		"running-speed", "running-power", "running-stride-length",
-		"running-ground-contact-time", "running-vertical-oscillation",
-		// Other quantity types
-		"wrist-temperature", "time-in-daylight", "dietary-water", "physical-effort", "walking-heart-rate",
-		// Category types
-		"mindful-sessions", "stand-hours",
+	return append(hk.Keys(), "other-quantity", "other-category")
+}
+
+// ExtraTables are the non-metric tables that Explore/TableRows may read.
+var ExtraTables = []string{
+	"activity_summary", "workout_statistics", "workout_events", "workout_zones",
+	"workout_routes", "hrv_beats", "ecg", "devices", "profile", "imports",
+}
+
+// ResolveTable maps any accepted name to a real table name, including the
+// extra non-metric tables.
+func ResolveTable(name string) (string, bool) {
+	if t, ok := TableNameMap[name]; ok {
+		return t, true
 	}
+	n := strings.ReplaceAll(name, "-", "_")
+	for _, t := range ExtraTables {
+		if t == n {
+			return t, true
+		}
+	}
+	return "", false
 }
 
 // QueryRows executes a query against the specified table and returns rows as maps.
@@ -335,8 +263,8 @@ type stepsRecord struct {
 	unit      string
 }
 
-// deduplicateSteps removes overlapping step records, preferring higher-priority sources.
-func deduplicateSteps(records []stepsRecord) []stepsRecord {
+// dedupOverlaps removes overlapping step records, preferring higher-priority sources.
+func dedupOverlaps(records []stepsRecord) []stepsRecord {
 	// Sort by start_date ASC
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].startDate < records[j].startDate
@@ -410,7 +338,7 @@ func (db *DB) QueryStepsDailyTotal(params QueryParams) ([]map[string]interface{}
 		return nil, err
 	}
 
-	deduped := deduplicateSteps(records)
+	deduped := dedupOverlaps(records)
 
 	// Aggregate by calendar day (first 10 chars of start_date = "YYYY-MM-DD")
 	dailyTotals := make(map[string]float64)
@@ -470,7 +398,7 @@ func (db *DB) queryEnergyDailyTotal(tableName string, params QueryParams) ([]map
 		return nil, err
 	}
 
-	deduped := deduplicateSteps(records)
+	deduped := dedupOverlaps(records)
 
 	dailyTotals := make(map[string]float64)
 	var dayOrder []string
@@ -607,6 +535,45 @@ func buildSleepSessions(segments []sleepSession) []sleepSession {
 // not wear the watch" are different facts. Naps are reported in their own column and
 // are never folded into the night's hours.
 func (db *DB) QuerySleepDailyTotal(params QueryParams) ([]map[string]interface{}, error) {
+	nights, err := db.sleepNightTotals(params)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]map[string]interface{}, 0, len(nights))
+	for _, t := range nights {
+		row := map[string]interface{}{
+			"night": t.Night,
+			"naps":  strconv.FormatFloat(t.Naps, 'f', 1, 64),
+			// A night that holds only a nap has no recorded night sleep. Reporting
+			// 0.0 there would claim the user slept nothing, which is the same
+			// fabrication as inventing hours for an unworn watch.
+			"hours": "",
+			"onset": "",
+			"wake":  "",
+		}
+		if !t.Onset.IsZero() {
+			row["hours"] = strconv.FormatFloat(t.Hours, 'f', 1, 64)
+			row["onset"] = t.Onset.Format("15:04")
+			row["wake"] = t.Wake.Format("15:04")
+		}
+		results = append(results, row)
+	}
+	return results, nil
+}
+
+// NightTotal is one night's sleep as reconstructed from sessions. Onset and
+// Wake are zero when the night holds only naps.
+type NightTotal struct {
+	Night string
+	Hours float64
+	Naps  float64
+	Onset time.Time
+	Wake  time.Time
+}
+
+// sleepNightTotals is the structured core of QuerySleepDailyTotal, newest
+// night first, honouring params.Limit.
+func (db *DB) sleepNightTotals(params QueryParams) ([]NightTotal, error) {
 	// A night keyed to date D can hold segments recorded on D (evening onset) or on
 	// D+1 (post-midnight onset, and any nap during the following day), so the scan
 	// window is widened past To and the results are filtered by night afterwards.
@@ -649,13 +616,7 @@ func (db *DB) QuerySleepDailyTotal(params QueryParams) ([]map[string]interface{}
 		return nil, err
 	}
 
-	type nightTotal struct {
-		hours float64
-		naps  float64
-		onset time.Time
-		wake  time.Time
-	}
-	totals := make(map[string]*nightTotal)
+	totals := make(map[string]*NightTotal)
 
 	for _, s := range buildSleepSessions(segments) {
 		night := s.night()
@@ -668,19 +629,19 @@ func (db *DB) QuerySleepDailyTotal(params QueryParams) ([]map[string]interface{}
 
 		t, ok := totals[night]
 		if !ok {
-			t = &nightTotal{}
+			t = &NightTotal{Night: night}
 			totals[night] = t
 		}
 		if s.isNap() {
-			t.naps += s.asleep.Hours()
+			t.Naps += s.asleep.Hours()
 			continue
 		}
-		t.hours += s.asleep.Hours()
-		if t.onset.IsZero() || s.start.Before(t.onset) {
-			t.onset = s.start
+		t.Hours += s.asleep.Hours()
+		if t.Onset.IsZero() || s.start.Before(t.Onset) {
+			t.Onset = s.start
 		}
-		if s.end.After(t.wake) {
-			t.wake = s.end
+		if s.end.After(t.Wake) {
+			t.Wake = s.end
 		}
 	}
 
@@ -694,27 +655,11 @@ func (db *DB) QuerySleepDailyTotal(params QueryParams) ([]map[string]interface{}
 		nights = nights[:params.Limit]
 	}
 
-	results := make([]map[string]interface{}, 0, len(nights))
+	out := make([]NightTotal, 0, len(nights))
 	for _, night := range nights {
-		t := totals[night]
-		row := map[string]interface{}{
-			"night": night,
-			"naps":  strconv.FormatFloat(t.naps, 'f', 1, 64),
-			// A night that holds only a nap has no recorded night sleep. Reporting
-			// 0.0 there would claim the user slept nothing, which is the same
-			// fabrication as inventing hours for an unworn watch.
-			"hours": "",
-			"onset": "",
-			"wake":  "",
-		}
-		if !t.onset.IsZero() {
-			row["hours"] = strconv.FormatFloat(t.hours, 'f', 1, 64)
-			row["onset"] = t.onset.Format("15:04")
-			row["wake"] = t.wake.Format("15:04")
-		}
-		results = append(results, row)
+		out = append(out, *totals[night])
 	}
-	return results, nil
+	return out, nil
 }
 
 // QueryActiveEnergyDailyTotal returns deduplicated daily active energy totals aggregated by calendar day.
@@ -725,4 +670,9 @@ func (db *DB) QueryActiveEnergyDailyTotal(params QueryParams) ([]map[string]inte
 // QueryBasalEnergyDailyTotal returns deduplicated daily basal energy totals aggregated by calendar day.
 func (db *DB) QueryBasalEnergyDailyTotal(params QueryParams) ([]map[string]interface{}, error) {
 	return db.queryEnergyDailyTotal("basal_energy", params)
+}
+
+// parseDay parses a YYYY-MM-DD string.
+func parseDay(d string) (time.Time, error) {
+	return time.Parse(time.DateOnly, d[:min(len(d), 10)])
 }

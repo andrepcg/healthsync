@@ -172,9 +172,9 @@ func TestBatchInsert_MixNewAndDuplicate(t *testing.T) {
 	db.BatchInsertRecords("heart_rate", cols, [][]any{existing})
 
 	mixed := [][]any{
-		existing,                                                                              // duplicate
-		{"Watch", "2024-01-01 00:02:00", "2024-01-01 00:03:00", 75.0, "count/min"},           // new
-		{"Watch", "2024-01-01 00:04:00", "2024-01-01 00:05:00", 80.0, "count/min"},           // new
+		existing, // duplicate
+		{"Watch", "2024-01-01 00:02:00", "2024-01-01 00:03:00", 75.0, "count/min"}, // new
+		{"Watch", "2024-01-01 00:04:00", "2024-01-01 00:05:00", 80.0, "count/min"}, // new
 	}
 	stats, err := db.BatchInsertRecords("heart_rate", cols, mixed)
 	if err != nil {
@@ -479,7 +479,7 @@ func TestDeduplicateSteps_NoOverlap(t *testing.T) {
 		{source: "iPhone", startDate: "2024-01-01 08:00:00", endDate: "2024-01-01 08:15:00", value: 100},
 		{source: "iPhone", startDate: "2024-01-01 08:15:00", endDate: "2024-01-01 08:30:00", value: 200},
 	}
-	result := deduplicateSteps(records)
+	result := dedupOverlaps(records)
 	if len(result) != 2 {
 		t.Errorf("expected 2 records, got %d", len(result))
 	}
@@ -498,7 +498,7 @@ func TestDeduplicateSteps_OverlapSameSource(t *testing.T) {
 		{source: "iPhone", startDate: "2024-01-01 08:00:00", endDate: "2024-01-01 08:20:00", value: 150},
 		{source: "iPhone", startDate: "2024-01-01 08:10:00", endDate: "2024-01-01 08:30:00", value: 200},
 	}
-	result := deduplicateSteps(records)
+	result := dedupOverlaps(records)
 	if len(result) != 1 {
 		t.Errorf("expected 1 record, got %d", len(result))
 	}
@@ -513,7 +513,7 @@ func TestDeduplicateSteps_OverlapWatchBeatsIPhone(t *testing.T) {
 		{source: "Sid's iPhone", startDate: "2024-01-01 08:00:00", endDate: "2024-01-01 08:30:00", value: 500},
 		{source: "Sid's Apple Watch", startDate: "2024-01-01 08:05:00", endDate: "2024-01-01 08:25:00", value: 300},
 	}
-	result := deduplicateSteps(records)
+	result := dedupOverlaps(records)
 	if len(result) != 1 {
 		t.Errorf("expected 1 record, got %d", len(result))
 	}
@@ -527,7 +527,7 @@ func TestDeduplicateSteps_OverlapIPhoneBeatsThirdParty(t *testing.T) {
 		{source: "Pedometer++", startDate: "2024-01-01 08:00:00", endDate: "2024-01-01 08:30:00", value: 600},
 		{source: "Sid's iPhone", startDate: "2024-01-01 08:05:00", endDate: "2024-01-01 08:25:00", value: 400},
 	}
-	result := deduplicateSteps(records)
+	result := dedupOverlaps(records)
 	if len(result) != 1 {
 		t.Errorf("expected 1 record, got %d", len(result))
 	}
@@ -542,7 +542,7 @@ func TestDeduplicateSteps_MixedOverlapAndNon(t *testing.T) {
 		{source: "Sid's iPhone", startDate: "2024-01-01 08:05:00", endDate: "2024-01-01 08:20:00", value: 300},
 		{source: "Sid's Apple Watch", startDate: "2024-01-01 09:00:00", endDate: "2024-01-01 09:15:00", value: 150},
 	}
-	result := deduplicateSteps(records)
+	result := dedupOverlaps(records)
 	if len(result) != 2 {
 		t.Errorf("expected 2 records, got %d", len(result))
 	}
@@ -562,7 +562,7 @@ func TestDeduplicateSteps_AdjacentNotOverlapping(t *testing.T) {
 		{source: "iPhone", startDate: "2024-01-01 08:00:00", endDate: "2024-01-01 08:15:00", value: 100},
 		{source: "Apple Watch", startDate: "2024-01-01 08:15:00", endDate: "2024-01-01 08:30:00", value: 200},
 	}
-	result := deduplicateSteps(records)
+	result := dedupOverlaps(records)
 	if len(result) != 2 {
 		t.Errorf("expected 2 records (adjacent, not overlapping), got %d", len(result))
 	}
