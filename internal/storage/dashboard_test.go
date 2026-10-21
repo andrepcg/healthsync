@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -194,11 +195,12 @@ func TestQuerySeries_Cumulative_DedupsAndBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(w.Points) != 2 || w.Points[0].T != "2024-01-01" || w.Points[0].V != 1500 || w.Points[1].T != "2024-01-08" {
+	// Weeks show the average day over days with data: (1000+500)/2.
+	if len(w.Points) != 2 || w.Points[0].T != "2024-01-01" || w.Points[0].V != 750 || w.Points[0].Days != 2 || w.Points[1].T != "2024-01-08" {
 		t.Errorf("week points: %+v", w.Points)
 	}
 	mo, _ := db.QuerySeries(m, "", "", BucketMonth)
-	if len(mo.Points) != 1 || mo.Points[0].T != "2024-01-01" || mo.Points[0].V != 1700 {
+	if len(mo.Points) != 1 || mo.Points[0].T != "2024-01-01" || mo.Points[0].V*float64(mo.Points[0].Days) != 1700 {
 		t.Errorf("month points: %+v", mo.Points)
 	}
 	// Range filter is inclusive of "to".
@@ -227,8 +229,29 @@ func TestQuerySeries_SampleMinMaxAndEmptyDaysOmitted(t *testing.T) {
 		t.Errorf("day 1: %+v", p)
 	}
 	w, _ := db.QuerySeries(hk.ByKey["heart-rate"], "2024-01-01", "2024-01-05", BucketWeek)
-	if len(w.Points) != 1 || w.Points[0].V != 80 || *w.Points[0].Max != 100 || w.Points[0].N != 3 {
-		t.Errorf("weekly weighted mean: %+v", w.Points)
+	// Mean of daily means (70, 100), not of samples: every day counts once.
+	if len(w.Points) != 1 || w.Points[0].V != 85 || *w.Points[0].Max != 100 || w.Points[0].N != 3 || w.Points[0].Days != 2 {
+		t.Errorf("weekly mean of days: %+v", w.Points)
+	}
+}
+
+func TestQuerySeries_SampleHourWeighted(t *testing.T) {
+	db := tempDB(t)
+	// A workout hour sampled every few seconds must not outweigh a resting hour
+	// with a single reading.
+	rows := [][]any{{"W", "2024-01-01 07:30:00", "2024-01-01 07:30:00", 60.0, "count/min"}}
+	for i := 0; i < 50; i++ {
+		ts := fmt.Sprintf("2024-01-01 18:%02d:00", i)
+		rows = append(rows, []any{"W", ts, ts, 160.0, "count/min"})
+	}
+	insertRows(t, db, "heart_rate", rows)
+	s, err := db.QuerySeries(hk.ByKey["heart-rate"], "2024-01-01", "2024-01-01", BucketDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := s.Points[0]
+	if p.V != 110 || p.N != 51 || *p.Min != 60 || *p.Max != 160 {
+		t.Errorf("want mean of hours 110, all-sample min/max and N=51: %+v", p)
 	}
 }
 
@@ -286,7 +309,8 @@ func TestSummary_TilesAndDeltas(t *testing.T) {
 	if p.Days() != 7 || p.Previous().From != "2024-01-01" || p.Previous().To != "2024-01-07" {
 		t.Fatalf("period math: %d %+v", p.Days(), p.Previous())
 	}
-	s, err := db.Summary(p, true)
+	prev := p.Previous()
+	s, err := db.Summary(p, &prev)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,6 +37,16 @@ func (p Period) Previous() Period {
 	}
 }
 
+// PreviousYear returns the same dates one year earlier.
+func (p Period) PreviousYear() Period {
+	a, err1 := time.Parse(dateLayout, p.From)
+	b, err2 := time.Parse(dateLayout, p.To)
+	if err1 != nil || err2 != nil {
+		return Period{}
+	}
+	return Period{From: a.AddDate(-1, 0, 0).Format(dateLayout), To: b.AddDate(-1, 0, 0).Format(dateLayout)}
+}
+
 // Tile is one KPI on the overview.
 type Tile struct {
 	Metric string `json:"metric"`
@@ -95,23 +105,18 @@ var tileMetrics = []struct {
 	{"blood-glucose", false},
 }
 
-// Summary computes the KPI tiles for a period, comparing against the same
-// length period before it when compare is true. Metrics with no rows in the
-// period produce no tile.
-func (db *DB) Summary(p Period, compare bool) (*Summary, error) {
-	out := &Summary{Period: p}
-	var prev Period
-	if compare {
-		prev = p.Previous()
-		out.Previous = &prev
-	}
+// Summary computes the KPI tiles for a period, comparing against prev (the
+// period before, or the same dates last year) when it is not nil. Metrics
+// with no rows in the period produce no tile.
+func (db *DB) Summary(p Period, prev *Period) (*Summary, error) {
+	out := &Summary{Period: p, Previous: prev}
 
 	for _, tm := range tileMetrics {
 		m, ok := hk.ByKey[tm.key]
 		if !ok {
 			continue
 		}
-		tile, err := db.tile(m, tm.latest, p, prev, compare)
+		tile, err := db.tile(m, tm.latest, p, prev)
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +127,7 @@ func (db *DB) Summary(p Period, compare bool) (*Summary, error) {
 	return out, nil
 }
 
-func (db *DB) tile(m *hk.Metric, latest bool, p, prev Period, compare bool) (*Tile, error) {
+func (db *DB) tile(m *hk.Metric, latest bool, p Period, prev *Period) (*Tile, error) {
 	cur, err := db.QuerySeries(m, p.From, p.To, BucketDay)
 	if err != nil {
 		return nil, err
@@ -137,7 +142,7 @@ func (db *DB) tile(m *hk.Metric, latest bool, p, prev Period, compare bool) (*Ti
 		last := cur.Points[len(cur.Points)-1]
 		t.Value = last.V
 		t.Days = int64(len(cur.Points))
-		if compare {
+		if prev != nil {
 			pv, unit, err := db.LatestValue(m.Table, prev.To)
 			if err != nil {
 				return nil, err
@@ -150,7 +155,7 @@ func (db *DB) tile(m *hk.Metric, latest bool, p, prev Period, compare bool) (*Ti
 	}
 
 	t.Value, t.Total, t.Days = headline(m, cur.Points)
-	if compare {
+	if prev != nil {
 		ps, err := db.QuerySeries(m, prev.From, prev.To, BucketDay)
 		if err != nil {
 			return nil, err
@@ -165,7 +170,7 @@ func (db *DB) tile(m *hk.Metric, latest bool, p, prev Period, compare bool) (*Ti
 
 // headline reduces daily points to the tile value: a per-day mean over days
 // with data for cumulative/event metrics (with the total alongside), a
-// sample-weighted mean for sample metrics, the mean per night for sleep.
+// mean of daily means for sample metrics, the mean per night for sleep.
 func headline(m *hk.Metric, pts []SeriesPoint) (float64, *float64, int64) {
 	switch m.Agg {
 	case hk.Cumulative, hk.Event, hk.Duration:
@@ -183,16 +188,12 @@ func headline(m *hk.Metric, pts []SeriesPoint) (float64, *float64, int64) {
 		total := sum
 		return sum / float64(len(pts)), &total, int64(len(pts))
 	default:
+		// Each day counts once, whatever its sample density (see sampleSeries).
 		var sum float64
-		var n int64
 		for _, p := range pts {
-			sum += p.V * float64(p.N)
-			n += p.N
+			sum += p.V
 		}
-		if n == 0 {
-			return 0, nil, 0
-		}
-		return sum / float64(n), nil, int64(len(pts))
+		return sum / float64(len(pts)), nil, int64(len(pts))
 	}
 }
 

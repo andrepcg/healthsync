@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -29,16 +30,18 @@ func ParseBucket(s string) (Bucket, error) {
 	return "", fmt.Errorf("invalid bucket %q (day|week|month)", s)
 }
 
-// SeriesPoint is one bucket. V is the bucket's headline value (sum for
-// cumulative metrics, mean for samples, hours for durations, count for
-// events). Min/Max are present for sample metrics. N is the number of
-// underlying rows (or nights, for sleep).
+// SeriesPoint is one bucket. V is the bucket's headline value: for cumulative
+// metrics the daily total (day bucket) or the average day over the Days with
+// data (week/month), the mean of hourly means for samples, hours for
+// durations, count for events. Min/Max are present for sample metrics. N is
+// the number of underlying rows (or nights, for sleep).
 type SeriesPoint struct {
-	T   string   `json:"t"`
-	V   float64  `json:"v"`
-	N   int64    `json:"n"`
-	Min *float64 `json:"min,omitempty"`
-	Max *float64 `json:"max,omitempty"`
+	T    string   `json:"t"`
+	V    float64  `json:"v"`
+	N    int64    `json:"n"`
+	Days int64    `json:"days,omitempty"`
+	Min  *float64 `json:"min,omitempty"`
+	Max  *float64 `json:"max,omitempty"`
 }
 
 // Series is the result of QuerySeries.
@@ -227,11 +230,13 @@ func (db *DB) cumulativeSeries(table, typ, from, to string, bucket Bucket) ([]Se
 	}
 
 	totals := map[string]*SeriesPoint{}
+	days := map[string]bool{}
 	for _, r := range dedupOverlaps(records) {
 		if len(r.startDate) < 10 {
 			continue
 		}
-		k := bucketKey(r.startDate[:10], bucket)
+		d := r.startDate[:10]
+		k := bucketKey(d, bucket)
 		p, ok := totals[k]
 		if !ok {
 			p = &SeriesPoint{T: k}
@@ -239,21 +244,33 @@ func (db *DB) cumulativeSeries(table, typ, from, to string, bucket Bucket) ([]Se
 		}
 		p.V += r.value
 		p.N++
+		if !days[d] {
+			days[d] = true
+			p.Days++
+		}
+	}
+	// Weeks and months show the average day over days with data, so a partial
+	// week or a few unworn days do not read as a drop.
+	for _, p := range totals {
+		p.V /= float64(p.Days)
 	}
 	return sortPoints(totals), unit, nil
 }
 
-// sampleSeries aggregates per day in SQL, then re-buckets in Go so weekly and
-// monthly means are weighted by sample count.
+// sampleSeries averages per hour in SQL, then takes the mean of the hourly
+// means for each day and the mean of daily means for weeks and months. The
+// Watch samples heart rate every few seconds during a workout and every few
+// minutes otherwise, so a plain sample mean lets one hard hour dominate the
+// day. Min, max and N still cover every sample.
 func (db *DB) sampleSeries(table, typ, from, to string, bucket Bucket) ([]SeriesPoint, string, error) {
-	q := fmt.Sprintf(`SELECT substr(start_date, 1, 10) AS d, AVG(value), MIN(value), MAX(value), COUNT(*), MIN(unit) FROM %s WHERE 1=1`, table)
+	q := fmt.Sprintf(`SELECT substr(start_date, 1, 13) AS h, AVG(value), MIN(value), MAX(value), COUNT(*), MIN(unit) FROM %s WHERE 1=1`, table)
 	var args []any
 	if typ != "" {
 		q += " AND type = ?"
 		args = append(args, typ)
 	}
 	q += rangeClause("start_date", from, to, &args)
-	q += " GROUP BY d ORDER BY d"
+	q += " GROUP BY h ORDER BY h"
 
 	rows, err := db.conn.Query(q, args...)
 	if err != nil {
@@ -263,42 +280,48 @@ func (db *DB) sampleSeries(table, typ, from, to string, bucket Bucket) ([]Series
 
 	type acc struct {
 		sum, min, max float64
-		n             int64
+		parts, n      int64
 	}
-	buckets := map[string]*acc{}
+	add := func(m map[string]*acc, k string, v, mn, mx float64, n int64) {
+		a, ok := m[k]
+		if !ok {
+			a = &acc{min: mn, max: mx}
+			m[k] = a
+		}
+		a.sum += v
+		a.parts++
+		a.n += n
+		a.min = math.Min(a.min, mn)
+		a.max = math.Max(a.max, mx)
+	}
+	daysAcc := map[string]*acc{}
 	unit := ""
 	for rows.Next() {
-		var d, u string
+		var h, u string
 		var avg, mn, mx float64
 		var n int64
-		if err := rows.Scan(&d, &avg, &mn, &mx, &n, &u); err != nil {
+		if err := rows.Scan(&h, &avg, &mn, &mx, &n, &u); err != nil {
 			return nil, "", err
 		}
 		if unit == "" {
 			unit = u
 		}
-		k := bucketKey(d, bucket)
-		a, ok := buckets[k]
-		if !ok {
-			a = &acc{min: mn, max: mx}
-			buckets[k] = a
+		if len(h) < 10 {
+			continue
 		}
-		a.sum += avg * float64(n)
-		a.n += n
-		if mn < a.min {
-			a.min = mn
-		}
-		if mx > a.max {
-			a.max = mx
-		}
+		add(daysAcc, h[:10], avg, mn, mx, n)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
+	buckets := map[string]*acc{}
+	for d, a := range daysAcc {
+		add(buckets, bucketKey(d, bucket), a.sum/float64(a.parts), a.min, a.max, a.n)
+	}
 	pts := make(map[string]*SeriesPoint, len(buckets))
 	for k, a := range buckets {
 		mn, mx := a.min, a.max
-		pts[k] = &SeriesPoint{T: k, V: a.sum / float64(a.n), N: a.n, Min: &mn, Max: &mx}
+		pts[k] = &SeriesPoint{T: k, V: a.sum / float64(a.parts), N: a.n, Days: a.parts, Min: &mn, Max: &mx}
 	}
 	return sortPoints(pts), unit, nil
 }

@@ -141,8 +141,11 @@ func TestInsufficientDataIsSkipped(t *testing.T) {
 	db := tempDB(t)
 	insert(t, db, "resting_heart_rate", 5, func(int) (float64, bool) { return 50, true })
 	rep, _ := Compute(db, asOf)
-	if len(rep.Observations) != 0 {
-		t.Errorf("5 days must not produce observations: %+v", rep.Observations)
+	for _, o := range rep.Observations {
+		// The stale-export note depends on the wall clock, not on the data.
+		if o.Category != CatData {
+			t.Errorf("5 days must not produce observations: %+v", o)
+		}
 	}
 	found := false
 	for _, s := range rep.Skipped {
