@@ -31,6 +31,7 @@ type SleepNight struct {
 		HeartRateMin          *float64 `json:"hr_min,omitempty"`
 		HeartRateAvg          *float64 `json:"hr_avg,omitempty"`
 		HRV                   *float64 `json:"hrv,omitempty"`
+		HRVRMSSD              *float64 `json:"hrv_rmssd,omitempty"`
 	} `json:"vitals"`
 }
 
@@ -154,6 +155,7 @@ func (db *DB) SleepNights(from, to string) ([]SleepNight, error) {
 		n.Vitals.HeartRateMin = db.minBetween("heart_rate", vs, ve)
 		n.Vitals.HeartRateAvg = db.avgBetween("heart_rate", vs, ve)
 		n.Vitals.HRV = db.avgBetween("hrv", vs, ve)
+		n.Vitals.HRVRMSSD = db.avgBetween("hrv_rmssd", vs, ve)
 	}
 	return out, nil
 }

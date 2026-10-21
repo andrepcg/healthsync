@@ -149,6 +149,7 @@ var Metrics = []Metric{
 	q("resting-heart-rate", "RestingHeartRate", "resting_heart_rate", "count/min", "Resting Heart Rate", GroupHeart, Sample, "down"),
 	q("walking-heart-rate", "WalkingHeartRateAverage", "walking_heart_rate", "count/min", "Walking Heart Rate", GroupHeart, Sample, "down"),
 	q("hrv", "HeartRateVariabilitySDNN", "hrv", "ms", "Heart Rate Variability", GroupHeart, Sample, "up"),
+	q("hrv-rmssd", "HeartRateVariabilityRMSSD", "hrv_rmssd", "ms", "HRV (RMSSD)", GroupHeart, Sample, "up"),
 	q("heart-rate-recovery", "HeartRateRecoveryOneMinute", "heart_rate_recovery", "count/min", "Heart Rate Recovery", GroupHeart, Sample, "up"),
 	q("vo2max", "VO2Max", "vo2_max", "mL/min·kg", "VO₂ Max", GroupHeart, Sample, "up"),
 	q("afib-burden", "AtrialFibrillationBurden", "atrial_fibrillation_burden", "%", "AFib Burden", GroupHeart, Sample, "down"),
