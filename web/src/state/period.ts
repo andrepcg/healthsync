@@ -2,11 +2,14 @@ import { addDays, differenceInCalendarDays, format, isValid, parseISO, subDays, 
 
 export type Preset = '7d' | '30d' | '90d' | '1y' | 'all' | 'custom'
 
+/** What to compare the period with: the same length before it, the same dates last year, or nothing. */
+export type CompareMode = 'previous' | 'year' | 'none'
+
 export interface PeriodState {
   preset: Preset
   from: string
   to: string
-  compare: boolean
+  compare: CompareMode
 }
 
 export const PRESETS: { key: Preset; label: string }[] = [
@@ -54,7 +57,8 @@ export function resolvePreset(preset: Preset, anchor: string, first?: string): {
 }
 
 export function readPeriod(params: URLSearchParams, anchor: string, first?: string): PeriodState {
-  const compare = params.get('compare') !== 'none'
+  const c = params.get('compare')
+  const compare: CompareMode = c === 'none' || c === 'year' ? c : 'previous'
   const from = params.get('from')
   const to = params.get('to')
   if (from && to && parseDay(from) && parseDay(to) && from <= to) {
@@ -78,8 +82,8 @@ export function writePeriod(params: URLSearchParams, next: Partial<PeriodState>)
     p.delete('preset')
   }
   if (next.compare !== undefined) {
-    if (next.compare) p.delete('compare')
-    else p.set('compare', 'none')
+    if (next.compare === 'previous') p.delete('compare')
+    else p.set('compare', next.compare)
   }
   return p
 }
@@ -91,8 +95,9 @@ export function periodDays(from: string, to: string): number {
   return differenceInCalendarDays(b, a) + 1
 }
 
-export function previousPeriod(from: string, to: string): { from: string; to: string } {
+export function previousPeriod(from: string, to: string, mode: CompareMode = 'previous'): { from: string; to: string } {
   const a = parseDay(from)!
+  if (mode === 'year') return { from: fmtDay(subYears(a, 1)), to: fmtDay(subYears(parseDay(to)!, 1)) }
   const n = periodDays(from, to)
   return { from: fmtDay(subDays(a, n)), to: fmtDay(subDays(a, 1)) }
 }

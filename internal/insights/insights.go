@@ -73,6 +73,9 @@ type Observation struct {
 type Report struct {
 	AsOf         string        `json:"as_of"`
 	Observations []Observation `json:"observations"`
+	// Lead is one factual sentence for the top of the dashboard; empty when
+	// nothing qualifies.
+	Lead string `json:"lead,omitempty"`
 	// Checked lists every detector that ran, so the UI can say "12 checks,
 	// 3 findings" and the absence of an observation is meaningful.
 	Checked []string `json:"checked"`
@@ -172,6 +175,9 @@ func Compute(db *storage.DB, asOf string) (*Report, error) {
 		}
 		return a.Category < b.Category
 	})
+	if c.rep.Lead, err = lead(c); err != nil {
+		return nil, err
+	}
 	return c.rep, nil
 }
 

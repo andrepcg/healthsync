@@ -13,10 +13,10 @@ import { getDay, parseISO } from 'date-fns'
 export function ActivityPage() {
   const page = usePage()
   const { personId, period, t, person } = page
-  const prev = period.compare ? period.prev : undefined
+  const prev = period.compare !== 'none' ? period.prev : undefined
   const rings = useRings(personId, period.range)
   const stepsDay = useSeries(personId, 'steps', period.range, 'day')
-  const stepsPrev = useSeries(personId, 'steps', period.prev, 'day', period.compare)
+  const stepsPrev = useSeries(personId, 'steps', period.prev, 'day', period.compare !== 'none')
 
   const weekday = useMemo(() => {
     const agg = (pts?: { t: string; v: number }[]) => {

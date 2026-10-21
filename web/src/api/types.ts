@@ -31,8 +31,20 @@ export interface SeriesPoint {
   t: string
   v: number
   n: number
+  /** Days with data behind a point: weekly/monthly totals are an average day over these. */
+  days?: number
   min?: number
   max?: number
+}
+
+/** A person's usual range: median ± one robust spread of daily values. */
+export interface Band {
+  median: number
+  lo: number
+  hi: number
+  days: number
+  from: string
+  to: string
 }
 
 export interface Series {
@@ -42,6 +54,8 @@ export interface Series {
   bucket: 'day' | 'week' | 'month'
   agg: string
   points: SeriesPoint[]
+  /** "Your normal" over the 90 days ending at the period's last day (sample metrics and sleep). */
+  normal?: Band
 }
 
 export interface Tile {
@@ -117,13 +131,75 @@ export interface SleepNight {
     breathing_disturbances?: number
     hr_min?: number
     hr_avg?: number
+    hrv_rmssd?: number
     hrv?: number
   }
+}
+
+export interface SleepTiming {
+  debt: { minutes: number; nights: number; learning: boolean; need_hours: number; from: string; to: string }
+  chronotype?: { msf: string; msfsc: string; msw: string; label: string; social_jetlag_min: number; free_nights: number; work_nights: number }
+  chronotype_reason?: string
+  chronotype_window: string
+  need_source: string
 }
 
 export interface SleepNightsResponse {
   nights: SleepNight[]
   days_in_period: number
+  timing?: SleepTiming
+}
+
+export interface ReadinessComponent {
+  key: string
+  label: string
+  value: number
+  unit: string
+  usual: number
+  spread: number
+  z: number
+  score: number
+  weight: number
+}
+
+export interface ReadinessDay {
+  date: string
+  night: string
+  score: number | null
+  band?: 'good' | 'fair' | 'low'
+  components: ReadinessComponent[]
+  missing: { check: string; reason: string }[]
+}
+
+export interface Readiness {
+  days: ReadinessDay[]
+  sleep_need: number
+  sleep_need_source: string
+}
+
+export interface DayMetric {
+  key: string
+  name: string
+  group: string
+  unit: string
+  agg: string
+  value: number
+  n: number
+  normal?: Band
+  note?: string
+  /** A total on the last day with data, taken before the day ended. */
+  partial?: boolean
+}
+
+export interface DayView {
+  date: string
+  metrics: DayMetric[]
+  night?: SleepNight
+  workouts: WorkoutItem[]
+  events: { time: string; kind: string; name: string; value?: string; link?: string }[]
+  heart_rate: { t: string; v: number; min: number; max: number; n: number }[]
+  first_date?: string
+  last_date?: string
 }
 
 export interface WorkoutItem {
@@ -266,6 +342,7 @@ export interface HeartOverview {
   heart_rate?: Series
   resting_heart_rate?: Series
   hrv?: Series
+  hrv_rmssd?: Series
   walking_heart_rate?: Series
   heart_rate_recovery?: Series
   vo2max?: Series
@@ -307,6 +384,7 @@ export interface Observation {
 export interface ObservationReport {
   as_of: string
   observations: Observation[]
+  lead?: string
   checked: string[]
   skipped: { check: string; reason: string }[]
 }

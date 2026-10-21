@@ -18,7 +18,7 @@ export function usePeriod(anchor?: string, first?: string) {
     [setParams],
   )
   const range = useMemo(() => ({ from: state.from, to: state.to }), [state.from, state.to])
-  const prev = useMemo(() => previousPeriod(state.from, state.to), [state.from, state.to])
+  const prev = useMemo(() => previousPeriod(state.from, state.to, state.compare), [state.from, state.to, state.compare])
   const bucket = useMemo(() => autoBucket(state.from, state.to), [state.from, state.to])
   return { ...state, range, prev, bucket, set }
 }

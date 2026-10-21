@@ -4,6 +4,7 @@ import { usePerson } from '../api/hooks'
 import { useThemeCtx } from '../state/ThemeContext'
 import { PersonSwitcher } from './PersonSwitcher'
 import { ImportBanner } from './ImportBanner'
+import { DayPanel } from './DayPanel'
 
 const NAV: { to: string; label: string; ico: string; section?: string }[] = [
   { to: 'overview', label: 'Overview', ico: '🏠' },
@@ -17,6 +18,7 @@ const NAV: { to: string; label: string; ico: string; section?: string }[] = [
   { to: 'ecg', label: 'ECG', ico: '📈' },
   { to: 'environment', label: 'Environment & Hearing', ico: '🔊' },
   { to: 'mindfulness', label: 'Mindfulness', ico: '🧘' },
+  { to: 'report', label: 'Doctor report', ico: '🩺' },
   { to: 'explore', label: 'Explore data', ico: '🗂️', section: 'Data' },
 ]
 
@@ -82,6 +84,11 @@ export function AppShell() {
           <Outlet />
         </ErrorBoundary>
       </main>
+      {personId && (
+        <ErrorBoundary label="the day panel">
+          <DayPanel personId={personId} />
+        </ErrorBoundary>
+      )}
     </div>
   )
 }

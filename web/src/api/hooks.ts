@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, personPath, postJson, type Params } from './client'
 import type {
   Availability,
+  DayView,
   ECGAnalysisResponse,
   ECGDetail,
   ECGSummary,
@@ -12,6 +13,7 @@ import type {
   Metric,
   ObservationReport,
   Person,
+  Readiness,
   Rings,
   RoutePoint,
   Series,
@@ -57,10 +59,10 @@ export function useSeries(id: string | undefined, metric: string | undefined, ra
   })
 }
 
-export function useSummary(id: string | undefined, range: Range, compare: boolean) {
+export function useSummary(id: string | undefined, range: Range, compare: 'previous' | 'year' | 'none') {
   return useQuery({
     queryKey: ['summary', id, range.from, range.to, compare],
-    queryFn: () => fetchJson<Summary>(personPath(id!, '/summary'), { ...range, compare: compare ? 'previous' : 'none' }),
+    queryFn: () => fetchJson<Summary>(personPath(id!, '/summary'), { ...range, compare }),
     enabled: !!id && !!range.from && !!range.to,
   })
 }
@@ -86,6 +88,22 @@ export function useRings(id: string | undefined, range: Range) {
     queryKey: ['rings', id, range.from, range.to],
     queryFn: () => fetchJson<Rings>(personPath(id!, '/activity/rings'), range),
     enabled: !!id,
+  })
+}
+
+export function useDay(id: string | undefined, date: string | null) {
+  return useQuery({
+    queryKey: ['day', id, date],
+    queryFn: () => fetchJson<DayView>(personPath(id!, '/day'), { date: date! }),
+    enabled: !!id && !!date,
+  })
+}
+
+export function useReadiness(id: string | undefined, range: Range) {
+  return useQuery({
+    queryKey: ['readiness', id, range.from, range.to],
+    queryFn: () => fetchJson<Readiness>(personPath(id!, '/readiness'), range),
+    enabled: !!id && !!range.from && !!range.to,
   })
 }
 

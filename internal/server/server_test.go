@@ -228,6 +228,37 @@ func TestUpload_ImportsAndServesDashboardData(t *testing.T) {
 	if rr := do(t, router, "GET", "/api/people/"+id+"/summary", nil, ""); rr.Code != 400 {
 		t.Errorf("summary without period: %d", rr.Code)
 	}
+	rr = do(t, router, "GET", "/api/people/"+id+"/summary?from=2024-01-01&to=2024-01-07&compare=year", nil, "")
+	decode(t, rr, &summary)
+	if summary.Previous["from"] != "2023-01-01" || summary.Previous["to"] != "2023-01-07" {
+		t.Errorf("compare=year: %+v", summary.Previous)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/day?date=2024-01-02", nil, "")
+	var dayView struct {
+		Date      string
+		Metrics   []map[string]any
+		HeartRate []map[string]any `json:"heart_rate"`
+		Workouts  []map[string]any
+		Events    []map[string]any
+	}
+	decode(t, rr, &dayView)
+	if rr.Code != 200 || dayView.Date != "2024-01-02" || len(dayView.Metrics) == 0 || dayView.Events == nil || dayView.Workouts == nil {
+		t.Errorf("day: %d %s", rr.Code, rr.Body.String())
+	}
+	if rr := do(t, router, "GET", "/api/people/"+id+"/day", nil, ""); rr.Code != 400 {
+		t.Errorf("day without date: %d", rr.Code)
+	}
+
+	rr = do(t, router, "GET", "/api/people/"+id+"/readiness?from=2024-01-01&to=2024-01-07", nil, "")
+	var ready struct {
+		Days []map[string]any
+		Need float64 `json:"sleep_need"`
+	}
+	decode(t, rr, &ready)
+	if rr.Code != 200 || ready.Need == 0 || ready.Days == nil {
+		t.Errorf("readiness: %d %s", rr.Code, rr.Body.String())
+	}
 
 	rr = do(t, router, "GET", "/api/people/"+id+"/highlights?from=2024-01-01&to=2024-01-07", nil, "")
 	if rr.Code != 200 || !strings.HasPrefix(strings.TrimSpace(rr.Body.String()), "[") {
@@ -271,10 +302,15 @@ func TestUpload_ImportsAndServesDashboardData(t *testing.T) {
 	}
 
 	rr = do(t, router, "GET", "/api/people/"+id+"/sleep/nights?from=2024-01-01&to=2024-01-07", nil, "")
-	var nights struct{ Nights []map[string]any }
+	var nights struct {
+		Nights []map[string]any
+		Timing struct {
+			Debt map[string]any
+		}
+	}
 	decode(t, rr, &nights)
-	if len(nights.Nights) != 1 || nights.Nights[0]["hours"].(float64) != 7 {
-		t.Errorf("nights: %v", nights)
+	if len(nights.Nights) != 1 || nights.Nights[0]["hours"].(float64) != 7 || nights.Timing.Debt["learning"] != true {
+		t.Errorf("nights: %+v", nights)
 	}
 
 	rr = do(t, router, "GET", "/api/people/"+id+"/workouts", nil, "")

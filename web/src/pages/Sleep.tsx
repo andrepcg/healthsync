@@ -4,7 +4,8 @@ import { Chart } from '../charts/Chart'
 import { donut, multiLine, onsetWake, sleepStages } from '../charts/options'
 import { MetricChart } from '../components/MetricChart'
 import { ErrorNote, Loading, Section } from '../components/Section'
-import { fmtHours, fmtNum } from '../format'
+import { fmtDate, fmtHours, fmtNum } from '../format'
+import type { SleepTiming } from '../api/types'
 import { NoData, PageHead } from './PageHead'
 import { usePage } from './usePage'
 
@@ -90,6 +91,8 @@ export function SleepPage() {
             {stats.naps > 0 && <div className="stat"><div className="l">Naps</div><div className="v">{fmtHours(stats.naps)}</div><div className="muted small">total, kept separate</div></div>}
           </div>
 
+          {q.data?.timing && <TimingStrip timing={q.data.timing} />}
+
           <Section title="Sleep stages per night" hint={`${stats.n} nights`}>
             <Chart option={sleepStages(t, nights.filter((n) => n.onset))} height={300} />
           </Section>
@@ -150,5 +153,45 @@ export function SleepPage() {
         </div>
       )}
     </>
+  )
+}
+
+/** Sleep debt (last 5 mornings) and MCTQ chronotype (last 8 weeks), both anchored on the period's last day. */
+function TimingStrip({ timing }: { timing: SleepTiming }) {
+  const { debt, chronotype: c } = timing
+  return (
+    <div className="stat-strip card">
+      <div className="stat">
+        <div className="l">Sleep debt</div>
+        <div className="v">{debt.learning ? 'learning' : debt.minutes === 0 ? 'none' : fmtHours(debt.minutes / 60)}</div>
+        <div className="muted small">
+          {debt.learning ? `${debt.nights} of 4 nights needed` : `${debt.nights} nights to ${fmtDate(debt.to, 'd MMM')}`} · need {fmtHours(debt.need_hours)} ({timing.need_source})
+        </div>
+      </div>
+      {c ? (
+        <>
+          <div className="stat">
+            <div className="l">Chronotype</div>
+            <div className="v">{c.label}</div>
+            <div className="muted small">mid-sleep on free days {c.msfsc}{c.msfsc !== c.msf ? ` (corrected from ${c.msf})` : ''}</div>
+          </div>
+          <div className="stat">
+            <div className="l">Social jetlag</div>
+            <div className="v">{c.social_jetlag_min >= 60 ? fmtHours(c.social_jetlag_min / 60) : `${Math.round(c.social_jetlag_min)} min`}</div>
+            <div className="muted small">mid-sleep {c.msw} weekdays vs {c.msf} weekends · {c.work_nights} + {c.free_nights} nights</div>
+          </div>
+        </>
+      ) : (
+        <div className="stat">
+          <div className="l">Chronotype</div>
+          <div className="v faint">–</div>
+          <div className="muted small">{timing.chronotype_reason}</div>
+        </div>
+      )}
+      <div className="muted small" style={{ alignSelf: 'center', maxWidth: 320 }}>
+        Debt adds each short night in full and pays back half of each long one, over the last 5 mornings. Chronotype uses the last 8 weeks
+        ({timing.chronotype_window}), treating Friday and Saturday nights as free nights.
+      </div>
+    </div>
   )
 }

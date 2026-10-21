@@ -36,16 +36,18 @@ Base URL: `{{BASE_URL}}`. All responses are JSON unless noted. Dates are
 
 | Path | Params | Returns |
 |---|---|---|
-| `/digest` | `days` (default 7, max 366) | `{person, period:{from,to}, availability, summary, observations, highlights, sleep, workouts, profile}` — one call for a report |
+| `/digest` | `days` (default 7, max 366) | `{person, period:{from,to}, availability, summary, observations, highlights, sleep:{nights, days_in_period, timing}, readiness, workouts, profile}` — one call for a report |
 | `/availability` | | `{first_date, last_date, total_rows, tables:[{table, metric_key, name, group, kind, unit, rows, first, last}], other_types:[...], workouts, routes, ecgs, activity_days}` |
 | `/profile` | | `{date_of_birth, biological_sex, blood_type, ...}` from the export's `<Me>` |
-| `/summary` | `from`, `to` (required), `compare=previous\|none` | `{period, previous, tiles:[Tile]}` |
-| `/series/{metric}` | `from`, `to`, `bucket=day\|week\|month` | `{metric, name, unit, bucket, agg, points:[{t, v, n, min?, max?}]}`; `metric` is a key from `/api/metrics` (hyphen or underscore) or `other:<HKIdentifier>` |
-| `/observations` | `as_of` (default last_date) | `{as_of, observations:[Observation], checked:[...], skipped:[{check, reason}]}` |
+| `/summary` | `from`, `to` (required), `compare=previous\|year\|none` | `{period, previous, tiles:[Tile]}`; `year` compares with the same dates one year earlier |
+| `/series/{metric}` | `from`, `to`, `bucket=day\|week\|month` | `{metric, name, unit, bucket, agg, points:[{t, v, n, days?, min?, max?}], normal?:Band}`; `metric` is a key from `/api/metrics` (hyphen or underscore) or `other:<HKIdentifier>`. Cumulative week/month `v` is the average day over `days`. `normal` (sample metrics and sleep, when `to` is set) is the person's usual range over the 90 days ending at `to` |
+| `/day` | `date` (required) | `{date, metrics:[{key, name, group, unit, agg, value, n, normal?:Band (30 days before), note?: "highest in 90 days"\|"lowest in 90 days"\|"first reading", partial?}], night?:SleepNight (ended that morning), workouts, events:[{time, kind, name, value?, link?}], heart_rate:[{t: "YYYY-MM-DD HH:M0", v, min, max, n}] (10-minute buckets, gaps absent), first_date, last_date}` — `partial` marks totals on the export's last, unfinished day |
+| `/readiness` | `from`, `to` (required) | `{days:[{date (morning), night, score: 0–100\|null, band: good\|fair\|low, components:[{key: hrv\|sleeping_hr\|resp_rate\|sleep, label, value, unit, usual, spread, z, score, weight}], missing:[{check, reason}]}], sleep_need, sleep_need_source}` — 75 = the person's usual; null score with fewer than 3 signals |
+| `/observations` | `as_of` (default last_date) | `{as_of, lead?, observations:[Observation], checked:[...], skipped:[{check, reason}]}`; `lead` is one rule-based sentence for the top of a report |
 | `/highlights` | `from`, `to` (required) | `[{kind, title, detail, date?, value?, unit?, link?, tone}]` |
 | `/activity/rings` | `from`, `to` | `{days:[{date, energy, energy_goal, exercise, exercise_goal, stand, stand_goal, closed:{energy, exercise, stand, all}}], streaks:{current_all, longest_all, days_all_closed, days}}` |
-| `/sleep/nights` | `from`, `to` | `{nights:[{night, hours, naps, onset, wake, stages:{core, deep, rem, awake, unspecified, inbed}, vitals:{hr_min, hr_avg, hrv, resp_rate, spo2_min, spo2_avg, wrist_temp, breathing_disturbances}}], days_in_period}` — nights without data are omitted |
-| `/heart/overview` | `from`, `to`, `bucket` | `{heart_rate, resting_heart_rate, hrv, walking_heart_rate, heart_rate_recovery, vo2max, spo2, respiratory_rate, afib_burden (each a Series, present only with data), events:[{start_date, kind: high\|low\|irregular, value, metadata}], blood_pressure:[{start_date, systolic, diastolic}]}` |
+| `/sleep/nights` | `from`, `to` | `{nights:[{night, hours, naps, onset, wake, stages:{core, deep, rem, awake, unspecified, inbed}, vitals:{hr_min, hr_avg, hrv, hrv_rmssd, resp_rate, spo2_min, spo2_avg, wrist_temp, breathing_disturbances}}], days_in_period, timing?:{debt:{minutes, nights, learning, need_hours, from, to}, chronotype?:{msf, msfsc, msw, label, social_jetlag_min, free_nights, work_nights}, chronotype_reason?, chronotype_window, need_source}}` — nights without data are omitted; `timing` (when `to` is set): sleep debt over the 5 mornings ending at `to`, MCTQ chronotype over the 8 weeks ending at `to` |
+| `/heart/overview` | `from`, `to`, `bucket` | `{heart_rate, resting_heart_rate, hrv, hrv_rmssd, walking_heart_rate, heart_rate_recovery, vo2max, spo2, respiratory_rate, afib_burden (each a Series with `normal`, present only with data), events:[{start_date, kind: high\|low\|irregular, value, metadata}], blood_pressure:[{start_date, systolic, diastolic}]}` |
 | `/heart/hrv` | `from`, `to` | HRV readings `[{id, start_date, value, unit, beats}]` |
 | `/heart/hrv/{hrvID}/beats` | | beat-to-beat `[{seq, time, bpm}]` |
 | `/environment` | `from`, `to`, `bucket` | `{headphone_audio_exposure, environmental_audio_exposure, time_in_daylight, uv_exposure, water_temperature, events}` |
@@ -64,9 +66,13 @@ Base URL: `{{BASE_URL}}`. All responses are JSON unless noted. Dates are
 `{metric, name, unit, kind: cumulative|sample|duration|event|latest, value, total?, days, previous?, delta_pct?, direction: up|down|flat, good: up|down|"", sparkline:[Point]}`
 
 - cumulative/event: `value` = mean per day with data, `total` = period sum
-- sample: `value` = sample-weighted mean; sleep: mean hours per night, `days` = nights
+- sample: `value` = mean of daily values (each day is the mean of its hourly means, so dense workout sampling does not dominate); sleep: mean hours per night, `days` = nights
 - latest (VO2max, weight, body fat): last reading; `previous` = last reading before the period
 - `good` says which direction is desirable; a tile is absent when the metric has no data
+
+### Band
+
+`{median, lo, hi, days, from, to}` — median ± one MAD-based spread of daily values, clipped to the values seen.
 
 ### Observation
 

@@ -133,7 +133,13 @@ func (h *handlers) handleSeries(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "unknown metric %q", key)
 			return
 		}
-		s, err = db.QuerySeries(m, p.From, p.To, bucket)
+		ns, err := seriesWithNormal(db, m, p, bucket)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, ns)
+		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
@@ -142,13 +148,70 @@ func (h *handlers) handleSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s)
 }
 
+// normalSeries is a series with the person's usual range alongside.
+type normalSeries struct {
+	*storage.Series
+	Normal *insights.Band `json:"normal,omitempty"`
+}
+
+// seriesWithNormal queries a series and, for metrics where it makes sense,
+// adds "your normal": the 90 days ending at the period's last day.
+func seriesWithNormal(db *storage.DB, m *hk.Metric, p storage.Period, bucket storage.Bucket) (normalSeries, error) {
+	s, err := db.QuerySeries(m, p.From, p.To, bucket)
+	if err != nil || p.To == "" || !insights.HasNormal(m) || len(s.Points) == 0 {
+		return normalSeries{Series: s}, err
+	}
+	band, err := insights.Normal(db, m, p.To)
+	return normalSeries{s, band}, err
+}
+
+// handleDay returns everything recorded on one day (?date=YYYY-MM-DD).
+func (h *handlers) handleDay(w http.ResponseWriter, r *http.Request) {
+	date := r.URL.Query().Get("date")
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		writeError(w, http.StatusBadRequest, "date is required (YYYY-MM-DD)")
+		return
+	}
+	v, err := insights.Day(dbFrom(r), date)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// handleReadiness scores each morning in [from, to].
+func (h *handlers) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	p, ok := requirePeriod(w, r)
+	if !ok {
+		return
+	}
+	db := dbFrom(r)
+	need, src := insights.SleepNeed(db, personFrom(r).DOB, p.To)
+	days, err := insights.ComputeReadiness(db, p.From, p.To, need)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, insights.Readiness{Days: days, Need: need, NeedSource: src})
+}
+
 func (h *handlers) handleSummary(w http.ResponseWriter, r *http.Request) {
 	p, ok := requirePeriod(w, r)
 	if !ok {
 		return
 	}
-	compare := r.URL.Query().Get("compare") != "none"
-	s, err := dbFrom(r).Summary(p, compare)
+	var prev *storage.Period
+	switch r.URL.Query().Get("compare") {
+	case "none":
+	case "year":
+		py := p.PreviousYear()
+		prev = &py
+	default:
+		pp := p.Previous()
+		prev = &pp
+	}
+	s, err := dbFrom(r).Summary(p, prev)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
@@ -216,15 +279,27 @@ func (h *handlers) handleSleepNights(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	nights, err := dbFrom(r).SleepNights(p.From, p.To)
+	db := dbFrom(r)
+	nights, err := db.SleepNights(p.From, p.To)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"nights":         nights,
 		"days_in_period": p.Days(),
-	})
+	}
+	if p.To != "" {
+		need, src := insights.SleepNeed(db, personFrom(r).DOB, p.To)
+		timing, err := insights.ComputeSleepTiming(db, p.To, need)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		timing.NeedSource = src
+		out["timing"] = timing
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleHeartOverview bundles everything the Heart page needs in one call.
@@ -241,9 +316,9 @@ func (h *handlers) handleHeartOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	db := dbFrom(r)
 	out := map[string]any{}
-	for _, key := range []string{"heart-rate", "resting-heart-rate", "hrv", "walking-heart-rate", "heart-rate-recovery", "vo2max", "spo2", "respiratory-rate", "afib-burden"} {
+	for _, key := range []string{"heart-rate", "resting-heart-rate", "hrv", "hrv-rmssd", "walking-heart-rate", "heart-rate-recovery", "vo2max", "spo2", "respiratory-rate", "afib-burden"} {
 		m := hk.ByKey[key]
-		s, err := db.QuerySeries(m, p.From, p.To, bucket)
+		s, err := seriesWithNormal(db, m, p, bucket)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "%v", err)
 			return

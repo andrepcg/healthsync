@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import { fetchJson, personPath } from '../api/client'
 import { useHeart } from '../api/hooks'
 import { Chart } from '../charts/Chart'
-import { bandLine, beatsLine, bloodPressure, multiLine } from '../charts/options'
+import { bandLine, beatsLine, bloodPressure, multiLine, withNormal } from '../charts/options'
+import { useDayClick } from '../state/day'
 import { MetricChart } from '../components/MetricChart'
 import { Dialog } from '../components/Dialog'
 import { ErrorNote, Loading, Section } from '../components/Section'
@@ -22,6 +23,7 @@ export function HeartPage() {
     enabled: !!personId,
   })
   const [beatsFor, setBeatsFor] = useState<Record<string, unknown> | null>(null)
+  const onDay = useDayClick(period.bucket)
 
   const rhrMA = useMemo(() => {
     const pts = heart.data?.resting_heart_rate?.points ?? []
@@ -45,47 +47,52 @@ export function HeartPage() {
           <div className="grid cols-2">
             {h.heart_rate && (
               <Section title="Heart rate" hint="daily min · avg · max" className="span-2">
-                <Chart option={bandLine(t, h.heart_rate.points, 'count/min', period.bucket, t.palette[1], undefined, period.range)} height={260} />
+                <Chart option={bandLine(t, h.heart_rate.points, 'count/min', period.bucket, t.palette[1], undefined, period.range, h.heart_rate.normal)} height={260} onDayClick={onDay} />
               </Section>
             )}
             {h.resting_heart_rate && (
               <Section title="Resting heart rate" hint="with 7-day average">
-                <Chart option={multiLine(t, [{ name: 'Resting HR', pts: h.resting_heart_rate.points, color: t.palette[1] }, { name: '7-day avg', pts: rhrMA, color: t.palette[0], dashed: true }], 'count/min', period.bucket, period.range)} height={240} />
+                <Chart option={withNormal(t, multiLine(t, [{ name: 'Resting HR', pts: h.resting_heart_rate.points, color: t.palette[1] }, { name: '7-day avg', pts: rhrMA, color: t.palette[0], dashed: true }], 'count/min', period.bucket, period.range), h.resting_heart_rate.normal)} height={240} onDayClick={onDay} />
               </Section>
             )}
             {h.hrv && (
               <Section title="Heart rate variability" hint="SDNN · daily avg with range">
-                <Chart option={bandLine(t, h.hrv.points, 'ms', period.bucket, t.palette[4], undefined, period.range)} height={240} />
+                <Chart option={bandLine(t, h.hrv.points, 'ms', period.bucket, t.palette[4], undefined, period.range, h.hrv.normal)} height={240} onDayClick={onDay} />
+              </Section>
+            )}
+            {h.hrv_rmssd && (
+              <Section title="HRV (RMSSD)" hint="watchOS 27+ · daily avg with range">
+                <Chart option={bandLine(t, h.hrv_rmssd.points, 'ms', period.bucket, t.palette[4], undefined, period.range, h.hrv_rmssd.normal)} height={240} onDayClick={onDay} />
               </Section>
             )}
             {h.walking_heart_rate && (
               <Section title="Walking heart rate">
-                <Chart option={bandLine(t, h.walking_heart_rate.points, 'count/min', period.bucket, t.palette[6], undefined, period.range)} height={220} />
+                <Chart option={bandLine(t, h.walking_heart_rate.points, 'count/min', period.bucket, t.palette[6], undefined, period.range, h.walking_heart_rate.normal)} height={220} onDayClick={onDay} />
               </Section>
             )}
             {h.heart_rate_recovery && (
               <Section title="Heart rate recovery" hint="1 minute after workouts">
-                <Chart option={bandLine(t, h.heart_rate_recovery.points, 'count/min', period.bucket, t.palette[2], undefined, period.range)} height={220} />
+                <Chart option={bandLine(t, h.heart_rate_recovery.points, 'count/min', period.bucket, t.palette[2], undefined, period.range, h.heart_rate_recovery.normal)} height={220} onDayClick={onDay} />
               </Section>
             )}
             {h.vo2max && (
               <Section title="VO₂ max" hint="cardio fitness estimate">
-                <Chart option={bandLine(t, h.vo2max.points, 'mL/min·kg', period.bucket, t.palette[5], undefined, period.range)} height={220} />
+                <Chart option={bandLine(t, h.vo2max.points, 'mL/min·kg', period.bucket, t.palette[5], undefined, period.range, h.vo2max.normal)} height={220} onDayClick={onDay} />
               </Section>
             )}
             {h.spo2 && (
               <Section title="Blood oxygen" hint="SpO₂">
-                <Chart option={bandLine(t, h.spo2.points, '%', period.bucket, t.palette[7], undefined, period.range)} height={220} />
+                <Chart option={bandLine(t, h.spo2.points, '%', period.bucket, t.palette[7], undefined, period.range, h.spo2.normal)} height={220} onDayClick={onDay} />
               </Section>
             )}
             {h.respiratory_rate && (
               <Section title="Respiratory rate">
-                <Chart option={bandLine(t, h.respiratory_rate.points, 'count/min', period.bucket, t.palette[3], undefined, period.range)} height={220} />
+                <Chart option={bandLine(t, h.respiratory_rate.points, 'count/min', period.bucket, t.palette[3], undefined, period.range, h.respiratory_rate.normal)} height={220} onDayClick={onDay} />
               </Section>
             )}
             {h.afib_burden && (
               <Section title="AFib burden">
-                <Chart option={bandLine(t, h.afib_burden.points, '%', period.bucket, t.bad, undefined, period.range)} height={220} />
+                <Chart option={bandLine(t, h.afib_burden.points, '%', period.bucket, t.bad, undefined, period.range, h.afib_burden.normal)} height={220} onDayClick={onDay} />
               </Section>
             )}
             <MetricChart t={t} personId={personId} metric="peripheral-perfusion-index" range={period.range} bucket={period.bucket} />

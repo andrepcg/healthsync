@@ -5,6 +5,7 @@ import { ObservationCard } from '../components/ObservationCard'
 import { KpiTile } from '../components/KpiTile'
 import { HighlightList } from '../components/HighlightCard'
 import { RingsStrip } from '../components/Rings'
+import { ReadinessCard } from '../components/ReadinessCard'
 import { ErrorNote, Loading, Section } from '../components/Section'
 import { WorkoutCard } from '../components/WorkoutCard'
 import { fmtDate, fmtHours, fmtInt, fmtNum } from '../format'
@@ -37,7 +38,7 @@ const TILE_LINKS: Record<string, string> = {
 
 export function OverviewPage() {
   const page = usePage()
-  const { personId, period, person } = page
+  const { personId, period, person, t } = page
   const nav = useNavigate()
   const summary = useSummary(personId, period.range, period.compare)
   const highlights = useHighlights(personId, period.range)
@@ -66,6 +67,12 @@ export function OverviewPage() {
   return (
     <>
       <PageHead title="Overview" sub={person ? <>{person.name} · {fmtDate(period.from)} – {fmtDate(period.to)}</> : undefined} page={page} />
+
+      {observations.data?.lead && (
+        <div className="card lead" style={{ marginBottom: 16 }}>
+          {observations.data.lead} <span className="faint small">· as of {fmtDate(observations.data.as_of)}</span>
+        </div>
+      )}
 
       {observations.data && observations.data.observations.length > 0 && (
         <Section
@@ -100,6 +107,7 @@ export function OverviewPage() {
         </Section>
 
         <div className="stack">
+          <ReadinessCard t={t} personId={personId} range={period.range} />
           <Section title="Last night" right={<Link to={`/p/${personId}/sleep`} className="small">Sleep →</Link>}>
             {lastNight ? (
               <>

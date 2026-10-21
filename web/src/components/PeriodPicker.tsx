@@ -1,4 +1,4 @@
-import { PRESETS, type PeriodState, type Preset } from '../state/period'
+import { PRESETS, type CompareMode, type PeriodState, type Preset } from '../state/period'
 import { fmtDate } from '../format'
 
 interface Props {
@@ -37,10 +37,11 @@ export function PeriodPicker({ state, set, first, last, showCompare = true }: Pr
         aria-label="to"
       />
       {showCompare && (
-        <label className="check">
-          <input type="checkbox" checked={state.compare} onChange={(e) => set({ compare: e.target.checked })} />
-          vs previous period
-        </label>
+        <select value={state.compare} onChange={(e) => set({ compare: e.target.value as CompareMode })} aria-label="compare with">
+          <option value="previous">vs previous period</option>
+          <option value="year">vs same dates last year</option>
+          <option value="none">no comparison</option>
+        </select>
       )}
       {last && state.to === last && <span className="faint small nowrap">as of {fmtDate(last)}</span>}
     </div>

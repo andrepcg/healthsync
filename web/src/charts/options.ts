@@ -1,5 +1,5 @@
 import type { EChartsOption } from './echarts'
-import type { SeriesPoint, SleepNight } from '../api/types'
+import type { Band, SeriesPoint, SleepNight } from '../api/types'
 import { tokens } from './theme'
 import { fmtDate, fmtNum, fmtUnit, fmtValue } from '../format'
 
@@ -96,8 +96,8 @@ export function barsSeries(
   }
 }
 
-/** Line with a min–max band (sample metrics). */
-export function bandLine(t: Tok, pts: SeriesPoint[], unit: string, bucket: 'day' | 'week' | 'month', color?: string, refLines?: { y: number; label: string }[], range?: Range): EChartsOption {
+/** Line with a min–max band (sample metrics) and, when given, the person's normal range shaded behind it. */
+export function bandLine(t: Tok, pts: SeriesPoint[], unit: string, bucket: 'day' | 'week' | 'month', color?: string, refLines?: { y: number; label: string }[], range?: Range, normal?: Band): EChartsOption {
   const c = color ?? t.accent
   const hasBand = pts.some((p) => p.min !== undefined && p.max !== undefined)
   const series: Record<string, unknown>[] = []
@@ -130,7 +130,7 @@ export function bandLine(t: Tok, pts: SeriesPoint[], unit: string, bucket: 'day'
       ? { silent: true, symbol: 'none', data: refLines.map((r) => ({ yAxis: r.y, label: { formatter: r.label, position: 'insideEndTop' } })), lineStyle: { color: t.faint, type: 'dashed' } }
       : undefined,
   })
-  return {
+  return withNormal(t, {
     grid: baseGrid,
     tooltip: {
       trigger: 'axis',
@@ -141,12 +141,60 @@ export function bandLine(t: Tok, pts: SeriesPoint[], unit: string, bucket: 'day'
         const pt = pts.find((p) => p.t === avg.data[0])
         let s = `<b>${fmtDate(avg.data[0])}</b><br/>avg ${fmtValue(avg.data[1], unit)}`
         if (pt?.min !== undefined && pt.max !== undefined) s += `<br/><span style="color:${t.muted}">min ${fmtValue(pt.min, unit)} · max ${fmtValue(pt.max, unit)} · ${pt.n} samples</span>`
+        if (normal) s += `<br/><span style="color:${t.muted}">your normal ${fmtValue(normal.lo, unit)} – ${fmtValue(normal.hi, unit)}</span>`
         return s
       },
     },
     xAxis: timeAxis(bucket, range),
     yAxis: valueAxis(unit, 'dataMin', 'dataMax'),
     series,
+  }, normal)
+}
+
+/** Shade the person's usual range behind the first series and keep it in view. */
+export function withNormal(t: Tok, o: EChartsOption, normal?: Band): EChartsOption {
+  if (!normal) return o
+  const series = [...(o.series as Record<string, unknown>[])]
+  const main = series.findIndex((s) => s.name === 'avg')
+  const i = main >= 0 ? main : 0
+  series[i] = {
+    ...series[i],
+    markArea: {
+      silent: true,
+      itemStyle: { color: t.good, opacity: 0.08 },
+      label: { position: 'insideTopLeft', color: t.muted, fontSize: 10 },
+      data: [[{ yAxis: normal.lo, name: 'your normal' }, { yAxis: normal.hi }]],
+    },
+  }
+  return {
+    ...o,
+    series,
+    yAxis: { ...(o.yAxis as object), min: (v: { min: number }) => Math.min(v.min, normal.lo), max: (v: { max: number }) => Math.max(v.max, normal.hi) },
+  } as EChartsOption
+}
+
+/** One day of a sample metric in 10-minute buckets: mean line over a min–max band, gaps left open. */
+export function intradayLine(t: Tok, pts: { t: string; v: number; min: number; max: number }[], unit: string, day: string, color?: string): EChartsOption {
+  const c = color ?? t.bad
+  // Break the line wherever a 10-minute bucket is missing.
+  const rows: [string, number | null, number | null, number | null][] = []
+  let prev = 0
+  for (const p of pts) {
+    const ts = Date.parse(p.t.replace(' ', 'T'))
+    if (prev && ts - prev > 10 * 60 * 1000) rows.push([fmtDate(new Date(prev + 5 * 60 * 1000).toISOString(), "yyyy-MM-dd'T'HH:mm"), null, null, null])
+    rows.push([p.t.replace(' ', 'T'), p.v, p.min, p.max - p.min])
+    prev = ts
+  }
+  return {
+    grid: { ...baseGrid, top: 12 },
+    tooltip: tip(unit),
+    xAxis: { type: 'time', min: `${day}T00:00:00`, max: `${day}T23:59:59`, axisLabel: { formatter: (v: number) => fmtDate(new Date(v).toISOString(), 'HH:mm'), hideOverlap: true } },
+    yAxis: valueAxis(undefined, 'dataMin', 'dataMax'),
+    series: [
+      { name: 'min', type: 'line', data: rows.map((r) => [r[0], r[2]]), lineStyle: { opacity: 0 }, stack: 'b', symbol: 'none', silent: true, tooltip: { show: false } },
+      { name: 'range', type: 'line', data: rows.map((r) => [r[0], r[3]]), lineStyle: { opacity: 0 }, areaStyle: { color: c, opacity: 0.15 }, stack: 'b', symbol: 'none', silent: true, tooltip: { show: false } },
+      { name: 'avg', type: 'line', data: rows.map((r) => [r[0], r[1]]), symbol: 'none', lineStyle: { color: c, width: 1.5 }, itemStyle: { color: c }, connectNulls: false },
+    ],
   }
 }
 

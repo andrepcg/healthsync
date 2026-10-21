@@ -118,9 +118,15 @@ never need Node.
   hours (overlaps merged per stage) and overnight vitals joined on the [onset, wake] window.
 - Percent metrics Apple stores as fractions (SpO2 0.97 with unit `%`) are rescaled to 0–100 in
   `QuerySeries`/tiles/sleep vitals (`normalizePercent`) so every consumer sees one scale.
-- `Summary` tiles: cumulative/event → per-day mean over days with data + total; sample → weighted
-  mean; sleep → mean over nights present; "latest" metrics (VO2max, weight, body fat) → last
-  reading. Previous period = same length ending the day before `from`. Tiles with no rows are
+- Sample metrics are averaged **per hour first**, then per day (mean of hourly means), then per
+  week/month (mean of daily means). The Watch samples HR every few seconds in a workout, so a plain
+  sample mean let one hard hour dominate the day. Min/max/N still cover every sample.
+- Cumulative week/month points are the **average day** over `days` with data (not the bucket sum),
+  so a partial week or unworn days do not read as a drop; day points stay daily totals.
+- `Summary` tiles: cumulative/event → per-day mean over days with data + total; sample → mean of
+  daily means; sleep → mean over nights present; "latest" metrics (VO2max, weight, body fat) → last
+  reading. `Summary(p, prev *Period)`: prev is the same-length period before (`compare=previous`,
+  default), the same dates a year earlier (`compare=year`) or nil (`none`). Tiles with no rows are
   absent, never zero.
 - `Highlights`: best days, ring streaks (zero goal ≠ closed), least-squares trends for resting HR
   and HRV, first→last changes, sleep average with denominator, longest/most frequent workout,
@@ -140,6 +146,28 @@ never need Node.
   "discuss with a doctor", never diagnose. Adding a detector = one function appended to `steps`.
 - API: `GET /api/people/{id}/observations?as_of=YYYY-MM-DD` (default: last day with data). UI:
   Observations page + top-4 panel on Overview.
+- `Report.Lead` (`lead.go`): one rule-based sentence for the top of Overview/report: red flag or
+  recovery marker out of range → last night ≥ 1 h off the usual → "… within your usual range" and/or
+  "ordinary night" (within 20 min). Empty when nothing qualifies.
+- `normal.go`: `Normal(db, m, to)` = median ± MAD of daily values over the 90 days ending at `to`
+  (≥ 14 days), clipped to the values seen; sample metrics and sleep only. Served as `normal` on
+  `/series` and `/heart/overview` series and shaded "your normal" on charts.
+- `day.go`: `Day(db, date)` for the day panel: each metric vs the 30 days before (≥ 7), "highest/lowest
+  in 90 days" (≥ 30 prior days) or "first reading"; totals on the last day with data are `partial`
+  (export taken mid-day) and not compared. Plus the night that ended that morning, workouts, events
+  (`storage.DayEvents`: event-type tables except stand hours, other_category_records, ECGs) and
+  heart rate in 10-minute buckets (`storage.Intraday`, gaps left open).
+- `readiness.go`: per wake day from last night's vitals (`SleepNights`): overnight HRV (+), sleeping
+  avg HR (−), respiratory rate (any change −) vs the previous 28 nights' median/MAD (≥ 14 nights, MAD
+  floored at 3 % of the median) and sleep vs need (0.5 h per spread). Component = 75 + 12.5·z (z
+  clamped −4…+2), weights .35/.25/.15/.25 renormalised over present ones; ≥ 3 components incl. HRV or
+  HR or no score. Bands ≥ 70 good, ≥ 50 fair. Apple's own readiness is **not** in HealthKit (checked
+  iOS 27.1 SDK), so this is ours.
+- `SleepNeed`: Health app sleep goal, else AASM/NSF minimum for age (7 h adults), else 7 h.
+- `sleeptiming.go`: sleep debt over the 5 mornings ending at `to` (shortfall added in full, capped
+  3 h/night; surplus repays half; floor 0, cap 10 h; < 4 nights = learning) and MCTQ chronotype over
+  8 weeks (Fri/Sat nights are free nights; circular mean mid-sleep; MSFsc = MSF − ½(SDf − SDweek) when
+  free nights are longer; labels in 1 h steps around 04:00; social jetlag = |MSF − MSW|).
 
 ### ECG analysis (`internal/ecg`)
 - `ecg.Analyze(samplesUV, rate)`: baseline removal → Pan–Tompkins-style R detection (adaptive threshold,
@@ -161,12 +189,14 @@ never need Node.
   an import. Status carries the `Progress` struct; the People page polls it.
 - Routes: `/api/healthz`, `/api/metrics`, `/api/people[...]`, and per person: `upload`,
   `upload/status`, `imports`, `availability`, `profile`, `series/{metric}`, `summary`,
-  `highlights`, `activity/rings`, `sleep/nights`, `heart/overview`, `heart/hrv[/{id}/beats]`,
+  `highlights`, `observations`, `day?date=`, `readiness`, `digest`, `activity/rings`,
+  `sleep/nights` (+ `timing`), `heart/overview`, `heart/hrv[/{id}/beats]`,
   `environment`, `workouts[/types|/{id}|/{id}/route?format=json|geojson|gpx]`,
   `ecg[/{id}?points=N&format=csv]`, `tables/{table}?format=csv`, `export.db` (VACUUM INTO).
 - Compare has no endpoint: the UI composes it from `/series`.
-- `GET …/digest?days=N` bundles person, availability, summary (vs previous), observations, highlights,
-  sleep nights, workouts and a trimmed profile for agents: one call per report.
+- `GET …/digest?days=N` bundles person, availability, summary (vs previous), observations (with lead),
+  highlights, sleep nights + timing, readiness, workouts and a trimmed profile for agents: one call per
+  report.
 - **Agent skill over HTTP**: `cmd/skills/healthsync-api/{SKILL.md,api.md}` are embedded and served at
   `/skill/SKILL.md` and `/skill/api.md` with `{{BASE_URL}}` rendered from `--public-url` /
   `$HEALTHSYNC_PUBLIC_URL`, else `X-Forwarded-Proto/Host`, else the request Host. Hermes Agent installs
@@ -174,10 +204,17 @@ never need Node.
   endpoints change; `go:embed` in `cmd/skills_embed.go` covers both skill dirs.
 
 ### Web UI (`web/`)
-- Period lives in the URL (`?preset=30d` or `?from&to`, `&compare=none`) and is anchored on the
-  person's **last day with data**, not today. `autoBucket`: day ≤ 92 d, week ≤ 460 d, else month.
-- `MetricChart` fetches a series and renders bars (cumulative/event) or a band line (sample);
-  cards hide themselves when there is no data. X axes are pinned to the selected period so single
+- Period lives in the URL (`?preset=30d` or `?from&to`, `&compare=none|year`, default previous period)
+  and is anchored on the person's **last day with data**, not today. `autoBucket`: day ≤ 92 d,
+  week ≤ 460 d, else month.
+- Day panel: `?day=YYYY-MM-DD` (`state/day.ts`), rendered by `AppShell` beside any person page.
+  Opened by clicking a point on a daily chart (`useDayClick`), or from the readiness card; Alt+←/→
+  steps, Esc closes. Opening pushes history (Back closes), stepping replaces.
+- Overview: lead line, readiness card (score, per-signal meters, trend). Sleep: debt / chronotype /
+  social jetlag strip. Heart: normal band on every chart + HRV (RMSSD). Report page (`/report`): a
+  printable summary of the period; print CSS hides chrome and forces light tokens.
+- `MetricChart` fetches a series and renders bars (cumulative/event) or a band line (sample) with
+  the `normal` band (`withNormal`); cards hide themselves when there is no data. X axes are pinned to the selected period so single
   points and sparse series render correctly.
 - Theme: CSS tokens in `styles/tokens.css`; ECharts theme is rebuilt from the tokens on switch.
 - Leaflet: call `fitBounds` **before** adding vector layers, or Leaflet throws in `_clipPoints`.
@@ -197,7 +234,10 @@ never need Node.
 - `internal/storage` — ~70 tests: generated DDL for every table, v1→v2 column upgrade, series per
   Agg × bucket, summary deltas, ring streaks, table rows/CSV/availability, imports, ECG, highlights,
   plus the original dedup/sleep-session suites
-- `internal/insights` — each detector on synthetic data (elevated RHR, noisy baseline must not fire,
+- `internal/insights` — normal band, day view (notes, partial last day, 10-min HR, events, night),
+  readiness (usual ≈ 75, low on suppressed HRV + raised HR, no score with one signal), sleep need,
+  sleep debt (payback, caps, learning), chronotype/social jetlag, circular mean, lead line;
+  each detector on synthetic data (elevated RHR, noisy baseline must not fire,
   strain composite, load spike, short/irregular sleep, red flags, rings, stale/unworn), empty DB
 - `internal/ecg` — synthetic ECG generator: regular rhythm (60 bpm), premature beats, AF-like
   irregularity, inverted lead, heavy noise, flat line, empty input

@@ -5,6 +5,7 @@ import { Chart } from '../charts/Chart'
 import { bandLine, barsSeries } from '../charts/options'
 import type { tokens } from '../charts/theme'
 import { fmtValue } from '../format'
+import { useDayClick } from '../state/day'
 import { ErrorNote, Loading, Section } from './Section'
 
 type Tok = ReturnType<typeof tokens>
@@ -28,25 +29,35 @@ interface Props {
 
 export function seriesSummary(s: Series): string {
   if (!s.points.length) return ''
-  if (s.agg === 'cumulative' || s.agg === 'event') {
+  if (s.agg === 'cumulative') {
+    // Week/month points are an average day over `days`; day points are the day's total.
+    const days = s.points.reduce((a, p) => a + (p.days ?? 1), 0)
+    const total = s.points.reduce((a, p) => a + p.v * (p.days ?? 1), 0)
+    const per = s.bucket === 'day' ? '' : ` · bars: daily avg per ${s.bucket}`
+    return `${fmtValue(total / days, s.unit)} / day avg · ${fmtValue(total, s.unit)} total · ${days} days with data${per}`
+  }
+  if (s.agg === 'event') {
     const total = s.points.reduce((a, p) => a + p.v, 0)
     return `${fmtValue(total / s.points.length, s.unit)} / ${s.bucket} avg · ${fmtValue(total, s.unit)} total · ${s.points.length} ${s.bucket}s with data`
   }
+  // Every day counts once, whatever its sample density.
+  const days = s.points.reduce((a, p) => a + (p.days ?? 1), 0)
+  const mean = s.points.reduce((a, p) => a + p.v * (p.days ?? 1), 0) / Math.max(1, days)
   const n = s.points.reduce((a, p) => a + p.n, 0)
-  const mean = s.points.reduce((a, p) => a + p.v * p.n, 0) / Math.max(1, n)
   const mins = s.points.map((p) => p.min ?? p.v)
   const maxs = s.points.map((p) => p.max ?? p.v)
-  return `avg ${fmtValue(mean, s.unit)} · range ${fmtValue(Math.min(...mins), s.unit)} – ${fmtValue(Math.max(...maxs), s.unit)} · ${n} samples`
+  return `avg ${fmtValue(mean, s.unit)} · range ${fmtValue(Math.min(...mins), s.unit)} – ${fmtValue(Math.max(...maxs), s.unit)} · ${n} samples over ${days} days`
 }
 
 /** Fetches a metric series and renders bars (cumulative/event) or a band line (sample). */
 export function MetricChart({ t, personId, metric, title, range, prev, bucket, color, goal, refLines, height = 240, hideEmpty = true, summary }: Props) {
   const cur = useSeries(personId, metric, range, bucket)
   const prevQ = useSeries(personId, metric, prev ?? range, bucket, !!prev)
+  const onClick = useDayClick(bucket)
   const option = useMemo(() => {
     const s = cur.data
     if (!s) return null
-    if (s.agg === 'sample' || (s.agg === 'duration' && s.metric === 'sleep')) return bandLine(t, s.points, s.unit, bucket, color, refLines, range)
+    if (s.agg === 'sample' || (s.agg === 'duration' && s.metric === 'sleep')) return bandLine(t, s.points, s.unit, bucket, color, refLines, range, s.normal)
     return barsSeries(t, s.points, s.unit, bucket, prev ? prevQ.data?.points : undefined, goal, color, range)
   }, [cur.data, prevQ.data, t, bucket, color, goal, prev, refLines, range])
 
@@ -58,7 +69,7 @@ export function MetricChart({ t, personId, metric, title, range, prev, bucket, c
   }
   return (
     <Section title={title ?? cur.data.name} hint={(summary ?? seriesSummary)(cur.data)}>
-      {option && <Chart option={option} height={height} />}
+      {option && <Chart option={option} height={height} onDayClick={onClick} />}
     </Section>
   )
 }

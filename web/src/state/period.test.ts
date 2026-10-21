@@ -11,20 +11,24 @@ describe('period', () => {
   it('computes the previous period of equal length', () => {
     expect(periodDays('2026-09-01', '2026-09-30')).toBe(30)
     expect(previousPeriod('2026-09-01', '2026-09-30')).toEqual({ from: '2026-08-02', to: '2026-08-31' })
+    expect(previousPeriod('2026-09-01', '2026-09-30', 'year')).toEqual({ from: '2025-09-01', to: '2025-09-30' })
   })
   it('reads custom ranges and falls back to a 30 day preset', () => {
     const p = readPeriod(new URLSearchParams('from=2026-01-01&to=2026-01-31&compare=none'), '2026-09-08')
-    expect(p).toEqual({ preset: 'custom', from: '2026-01-01', to: '2026-01-31', compare: false })
+    expect(p).toEqual({ preset: 'custom', from: '2026-01-01', to: '2026-01-31', compare: 'none' })
     const d = readPeriod(new URLSearchParams('from=bad'), '2026-09-08')
     expect(d.preset).toBe('30d')
-    expect(d.compare).toBe(true)
+    expect(d.compare).toBe('previous')
+    expect(readPeriod(new URLSearchParams('compare=year'), '2026-09-08').compare).toBe('year')
   })
   it('writes presets and clears custom bounds', () => {
     const q = writePeriod(new URLSearchParams('from=2026-01-01&to=2026-01-31'), { preset: '7d' })
     expect(q.get('preset')).toBe('7d')
     expect(q.get('from')).toBeNull()
-    const c = writePeriod(new URLSearchParams(), { preset: 'custom', from: '2026-01-01', to: '2026-01-02', compare: false })
+    const c = writePeriod(new URLSearchParams(), { preset: 'custom', from: '2026-01-01', to: '2026-01-02', compare: 'none' })
     expect(c.toString()).toBe('from=2026-01-01&to=2026-01-02&compare=none')
+    expect(writePeriod(c, { compare: 'year' }).get('compare')).toBe('year')
+    expect(writePeriod(c, { compare: 'previous' }).get('compare')).toBeNull()
   })
   it('picks buckets by span', () => {
     expect(autoBucket('2026-08-10', '2026-09-08')).toBe('day')

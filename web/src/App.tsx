@@ -17,6 +17,7 @@ import { ExplorePage } from './pages/Explore'
 import { PeoplePage } from './pages/People'
 import { ComparePage } from './pages/Compare'
 import { ObservationsPage } from './pages/Observations'
+import { ReportPage } from './pages/Report'
 
 const WorkoutDetailPage = lazy(() => import('./pages/WorkoutDetail'))
 
@@ -74,6 +75,7 @@ export const router = createBrowserRouter([
           { path: 'environment', element: <EnvironmentPage /> },
           { path: 'mindfulness', element: <MindfulnessPage /> },
           { path: 'explore', element: <ExplorePage /> },
+          { path: 'report', element: <ReportPage /> },
         ],
       },
       { path: '*', element: <Navigate to="/" replace /> },

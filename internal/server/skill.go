@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/BRO3886/healthsync/internal/insights"
 	"github.com/BRO3886/healthsync/internal/storage"
 )
 
@@ -67,8 +68,9 @@ func (h *handlers) handleSkillFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDigest bundles what an agent needs for a report in one call: the
-// person, availability, KPI tiles vs the previous period, observations,
-// highlights, sleep nights and workouts for the last N days ending on the
+// person, availability, KPI tiles vs the previous period, observations (with
+// the lead line), highlights, sleep nights with debt and chronotype, readiness
+// and workouts for the last N days ending on the
 // person's last day with data.
 func (h *handlers) handleDigest(w http.ResponseWriter, r *http.Request) {
 	p := personFrom(r)
@@ -95,7 +97,8 @@ func (h *handlers) handleDigest(w http.ResponseWriter, r *http.Request) {
 	period := storage.Period{From: end.AddDate(0, 0, -(days - 1)).Format("2006-01-02"), To: av.LastDate}
 	out["period"] = period
 
-	summary, err := db.Summary(period, true)
+	prev := period.Previous()
+	summary, err := db.Summary(period, &prev)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "summary: %v", err)
 		return
@@ -124,7 +127,21 @@ func (h *handlers) handleDigest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "sleep: %v", err)
 		return
 	}
-	out["sleep"] = map[string]any{"nights": nights, "days_in_period": period.Days()}
+	need, needSrc := insights.SleepNeed(db, p.DOB, period.To)
+	timing, err := insights.ComputeSleepTiming(db, period.To, need)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "sleep timing: %v", err)
+		return
+	}
+	timing.NeedSource = needSrc
+	out["sleep"] = map[string]any{"nights": nights, "days_in_period": period.Days(), "timing": timing}
+
+	ready, err := insights.ComputeReadiness(db, period.From, period.To, need)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "readiness: %v", err)
+		return
+	}
+	out["readiness"] = insights.Readiness{Days: ready, Need: need, NeedSource: needSrc}
 
 	items, total, err := db.ListWorkouts(storage.WorkoutFilter{From: period.From, To: period.To, Limit: 200})
 	if err != nil {
